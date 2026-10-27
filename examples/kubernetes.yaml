@@ -1,0 +1,100 @@
+# A Kubernetes sketch for the CLA service: one Deployment, two volume
+# claims, a Service. Replace cla.example.org, <org>, <app id>, <client id>
+# and the age key, and create the cla Secret with the five files named
+# below. Not tried against a live cluster. docs/deploy.md explains the
+# choices; put your ingress controller's own rate limits in front.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cla
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate              # one copy at a time, like Swarm's stop-first
+  selector:
+    matchLabels: { app: cla }
+  template:
+    metadata:
+      labels: { app: cla }
+    spec:
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: cla
+          image: rotki/cla:<version>@sha256:<digest>
+          ports:
+            - containerPort: 4000
+          env:
+            - { name: BASE_URL, value: "https://cla.example.org" }
+            - { name: GITHUB_ORG, value: "<org>" }
+            - { name: GITHUB_APP_ID, value: "<app id>" }
+            - { name: GITHUB_APP_CLIENT_ID, value: "<client id>" }
+            - { name: AGE_RECIPIENT, value: "age1..." }
+            - { name: AGE_KEY_ID, value: "2026-01" }
+            - { name: BACKUP_DIR, value: /backups }
+            - { name: GITHUB_APP_PRIVATE_KEY_FILE, value: /run/secrets/cla/app-private-key }
+            - { name: GITHUB_APP_CLIENT_SECRET_FILE, value: /run/secrets/cla/app-client-secret }
+            - { name: GITHUB_WEBHOOK_SECRET_FILE, value: /run/secrets/cla/webhook-secret }
+            - { name: SESSION_KEY_FILE, value: /run/secrets/cla/session-key }
+            - { name: DISCORD_WEBHOOK_URL_FILE, value: /run/secrets/cla/discord-webhook-url }
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 128Mi }
+          readinessProbe:               # 503 until the signatures are loaded
+            httpGet: { path: /ready, port: 4000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 4000 }
+            periodSeconds: 30
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: backups, mountPath: /backups }
+            - { name: secrets, mountPath: /run/secrets/cla, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: cla-data }
+        - name: backups
+          persistentVolumeClaim: { claimName: cla-backups }
+        - name: secrets
+          secret:
+            secretName: cla
+            defaultMode: 0440           # group-readable: fsGroup makes 65532 the group
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cla-data
+spec:
+  accessModes: [ReadWriteOnce]    # block or local storage: flock must hold
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cla-backups
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cla
+spec:
+  selector: { app: cla }
+  ports:
+    - port: 80
+      targetPort: 4000

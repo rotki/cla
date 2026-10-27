@@ -1,0 +1,17 @@
+/server
+/cla-tool
+coverage.out
+.env
+.idea
+node_modules
+
+# Secrets, age keys and plain-text personal data must never be committed:
+# the App key, the decryption key, the seed list and cla-assistant exports.
+*.pem
+*.key
+*.age
+grandfathered.json
+export*.json
+
+# A local data directory holds signatures and the audit log.
+/data/

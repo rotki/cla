@@ -1,0 +1,14 @@
+{{define "content"}}
+<section class="card">
+  <p class="eyebrow">The agreement</p>
+  <article class="agreement">{{.Data.CLA.HTML}}</article>
+  <p class="meta after-agreement">Revision <a href="{{.Data.CLA.URL}}"><code>{{.Data.CLA.Revision}}</code></a></p>
+  {{if and .Data.Standing .Data.Standing.Covered}}
+  {{template "covered" .Data.Standing}}
+  {{else}}
+  <div class="actions">
+    {{if .Session}}<a class="button" href="/sign">Sign the agreement</a>{{else}}<a class="button" href="/login?return=%2Fsign">Log in with GitHub to sign</a>{{end}}
+  </div>
+  {{end}}
+</section>
+{{end}}

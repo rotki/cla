@@ -1,0 +1,22 @@
+{{define "content"}}
+<section class="card">
+  {{template "steps" 3}}
+  {{if .Data.Pending}}
+  <div class="result-icon" aria-hidden="true">…</div>
+  <h1>Waiting for confirmation</h1>
+  <p class="lead">
+    Your employer signature is saved. An admin confirms it, and the checks on your pull
+    requests turn green after that.
+  </p>
+  {{else}}
+  <div class="result-icon ok" aria-hidden="true">✓</div>
+  <h1>Thank you for signing</h1>
+  {{if .Data.PR}}
+  <p class="lead">Your signature is saved. The check on your pull request updates in a few seconds.</p>
+  {{else}}
+  <p class="lead">Your signature is saved. The checks on any pull requests waiting for it update in a few seconds, and future ones pass.</p>
+  {{end}}
+  {{end}}
+  {{with .Data.PR}}<div class="actions"><a class="button" href="{{.URL}}">Back to {{.Repo}}#{{.Number}}</a></div>{{end}}
+</section>
+{{end}}

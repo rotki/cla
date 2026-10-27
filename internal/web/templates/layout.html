@@ -1,0 +1,53 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{.Title}} · {{.Site.Name}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/theme.css?v={{.Theme}}">
+</head>
+<body>
+  <header class="top">
+    <div class="bar">
+      <a class="brand" href="/">{{if .Logo}}<img class="brand-logo" src="/logo?v={{.Logo}}" alt="">{{else}}<span class="brand-mark" aria-hidden="true">{{.Site.Mark}}</span>{{end}} {{.Site.Name}} <small>Contributor License Agreement</small></a>
+      {{if .Session}}
+      <form class="who" method="post" action="/logout">
+        <input type="hidden" name="csrf" value="{{.Session.CSRF}}">
+        <span>@{{.Session.Login}}</span>
+        <button type="submit" class="link">Log out</button>
+      </form>
+      {{end}}
+    </div>
+  </header>
+  <main>
+    {{template "content" .}}
+  </main>
+  <footer>
+    <div class="bar">
+      <span>© {{.Year}} {{.Site.LegalName}}</span>
+      <nav aria-label="Footer">
+        <a href="/cla">The agreement</a>
+        {{with .Site.Homepage}}<a href="{{.}}">{{$.Site.Name}}</a>{{end}}
+        <a href="{{.Site.Source}}">Source</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>{{end}}
+
+{{define "covered"}}
+{{if .Pending}}<p class="notice">Your employer signature is waiting for an admin to confirm it. There is nothing else to do.</p>
+{{else if .Grandfathered}}<p class="notice">You have contributed before, so you are already covered and there is nothing to sign.</p>
+{{else if .Signed}}<p class="notice">You have signed the agreement. There is nothing else to do.</p>
+{{end}}
+{{end}}
+
+{{define "steps"}}
+<ol class="steps" aria-label="Progress">
+  <li class="{{if eq . 1}}current{{else}}done{{end}}"><span>Log in</span></li>
+  <li class="{{if eq . 2}}current{{else if gt . 2}}done{{end}}"><span>Review &amp; sign</span></li>
+  <li class="{{if eq . 3}}current{{end}}"><span>Done</span></li>
+</ol>
+{{end}}

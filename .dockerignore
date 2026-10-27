@@ -1,0 +1,14 @@
+# Allowlist: the build sees only what it compiles. Anything new in the repo,
+# keys, exports or .env files included, stays out unless listed here.
+# scripts/check-image.sh verifies this.
+*
+!go.mod
+!go.sum
+!cmd/cla-server/*.go
+!cmd/cla-tool/*.go
+!internal/**/*.go
+!internal/web/templates/*.html
+!internal/web/static/*.css
+cmd/**/*_test.go
+internal/**/*_test.go
+internal/fakegh/**

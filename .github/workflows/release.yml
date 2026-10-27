@@ -1,0 +1,187 @@
+name: release
+
+# Pushing a v* tag publishes release notes generated from the commits since
+# the previous tag, and the image to Docker Hub as rotki/cla. Deploying it is
+# rotkehlchen-infra's job.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Only version tags on commits on main are released. The tag ruleset
+  # already limits who can push v* tags; this also stops a tag on a branch
+  # that was never merged, or one that is not a version, whoever pushed it.
+  on-main:
+    name: on-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A version tag only: anything else, such as vnext, would match none
+      # of the image's version tags and publish nothing but latest.
+      - name: The tag is a version
+        run: |
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::${GITHUB_REF_NAME} is not a version tag like v1.2.3 or v1.3.0-rc.1"
+            exit 1
+          fi
+
+      - name: The tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at a commit that is not on main"
+            exit 1
+          fi
+
+  release:
+    name: release
+    needs: on-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the GitHub release
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup node env 🏗
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      # From the lockfile, so the write token never runs unpinned code.
+      - name: Install dependencies 👨🏻‍💻
+        run: pnpm install --frozen-lockfile
+
+      - name: Publish release notes
+        run: pnpm exec changelogithub
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  image:
+    name: image
+    needs: on-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The Docker Hub token lives only in this environment, which accepts
+    # deployments from v* tags (and, if set up so, waits for a reviewer).
+    # No other workflow, branch or pull request can read it.
+    environment:
+      name: dockerhub
+      url: https://hub.docker.com/r/rotki/cla
+    permissions:
+      contents: read
+      id-token: write # sign the provenance attestation (Sigstore)
+      attestations: write # record the attestation on GitHub
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every time in the image comes from the commit, not the clock, so the
+      # same commit always gives the same image: anyone can rebuild a release
+      # and compare digests.
+      - name: Commit time
+        id: time
+        run: |
+          epoch=$(git log -1 --format=%ct)
+          echo "epoch=${epoch}" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # The same check as CI, on the exact sources being released, before
+      # anything is pushed: only sources in the build context, only the two
+      # binaries, the CA bundle and the owned data directories in the image.
+      - name: Check the image
+        run: scripts/check-image.sh
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Tags, and annotations on the image index only. The image's labels
+      # are the Dockerfile's own, filled in from the build arguments, so a
+      # local rebuild with the same arguments gives the same platform images.
+      - name: Image tags and annotations
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: docker.io/rotki/cla
+          # v1.2.3 gives 1.2.3, 1.2 and 1; latest only for a final release,
+          # never for a pre-release such as v1.3.0-rc.1.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+          flavor: latest=false
+          # The action points url at the GitHub repository and dates the
+          # image to the build; the Dockerfile's url and the commit time are
+          # the ones meant.
+          annotations: |
+            org.opencontainers.image.url=https://rotki.com
+            org.opencontainers.image.created=${{ steps.time.outputs.created }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # No build cache: a cache shared with other runs could carry poisoned
+      # layers into a release.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          # Pushed, with every file and layer time set to the commit time.
+          outputs: type=registry,rewrite-timestamp=true
+          tags: ${{ steps.meta.outputs.tags }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.time.outputs.created }}
+            SOURCE_DATE_EPOCH=${{ steps.time.outputs.epoch }}
+          # Build provenance and a software bill of materials, attached to
+          # the image in the registry. Both sit inside the image index, so
+          # the signed attestation below, made for the index digest, covers
+          # them too.
+          provenance: mode=max
+          sbom: true
+
+      # A Sigstore-signed SLSA provenance attestation, tied to this workflow
+      # run and pushed next to the image, so anyone can check the image was
+      # built here from this commit:
+      #   gh attestation verify oci://docker.io/rotki/cla:<version> -R rotki/cla
+      - name: Sign the provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/rotki/cla
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false

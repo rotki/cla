@@ -1,0 +1,14 @@
+{
+  "cla_gist": "e2fd4e347bc7282602f33de6e181ca5a",
+  "cla_revision": "33b21e01f56def552258c2a63d03ce73c69d12da",
+  "allowlist": [],
+  "exempt_team": "core",
+  "excluded_repos": [],
+  "site": {
+    "name": "rotki",
+    "legal_name": "Rotki Solutions GmbH",
+    "homepage": "https://rotki.com",
+    "source": "https://github.com/rotki/cla",
+    "accent_color": "#4e5ba6"
+  }
+}

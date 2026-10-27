@@ -1,0 +1,16 @@
+{
+  "name": "cla",
+  "private": true,
+  "packageManager": "pnpm@12.13.0",
+  "description": "Commit message linting and release notes only; the service itself is Go",
+  "license": "AGPL-3.0",
+  "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
+    "changelogithub": "14.0.0"
+  },
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=12 <13"
+  }
+}

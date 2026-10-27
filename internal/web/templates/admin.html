@@ -1,0 +1,58 @@
+{{define "content"}}
+{{$csrf := .Session.CSRF}}
+<section class="card">
+  <p class="eyebrow">Admin</p>
+  <h1>Pending employer signatures</h1>
+  {{if not .Data.Records}}
+  <p class="lead">Nothing is waiting for confirmation.</p>
+  {{else}}
+  <p class="lead">Confirm a signature once you know the signer may sign for the employer. Rejecting removes it, and the contributor sees the signing link again.</p>
+  <div class="table">
+  <table>
+    <thead><tr><th>Signed</th><th>Account</th><th>Employer</th><th>Role</th><th>Pull request</th><th><span class="meta">Actions</span></th></tr></thead>
+    <tbody>
+    {{range .Data.Records}}
+    <tr>
+      <td>{{.SignedAt.Format "2006-01-02"}}</td>
+      <td><a href="https://github.com/{{.Login}}">@{{.Login}}</a></td>
+      <td>{{.Company}}</td>
+      <td>{{.Role}}</td>
+      <td>{{if .PR}}{{.PR}}{{else}}<span class="meta">none</span>{{end}}</td>
+      <td class="row-actions">
+        <form method="post" action="/admin/confirm">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="id" value="{{.GitHubID}}">
+          <button type="submit">Confirm</button>
+        </form>
+        <form method="post" action="/admin/reject">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="id" value="{{.GitHubID}}">
+          <button type="submit" class="secondary">Reject</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2 class="card-title">Re-check pull requests</h2>
+  <p class="lead">
+    Checks every open pull request again, green ones included. Use it when a status looks wrong.
+    Changes to the signatures or config are picked up on their own.
+  </p>
+  {{with .Data.Notice}}<p class="notice-box" role="status">{{.}}</p>{{end}}
+  <form method="post" action="/admin/recheck">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <button type="submit"{{if not .Data.CanRecheck}} disabled{{end}}>Re-check all open pull requests</button>
+  </form>
+  <p class="meta after-agreement">
+    {{if .Data.Running}}A re-check is running.{{else if .Data.LastRecheck.IsZero}}No manual re-check since the service started.{{else}}Last re-check {{.Data.LastRecheck.UTC.Format "2006-01-02 15:04"}} UTC{{if not .Data.CanRecheck}}; the next one is possible after {{.Data.NextRecheck.UTC.Format "15:04"}} UTC{{end}}.{{end}}
+    {{if .Data.QueueDepth}}Checks waiting: {{.Data.QueueDepth}}.{{end}}
+    At most one re-check every 10 minutes.
+  </p>
+</section>
+{{end}}

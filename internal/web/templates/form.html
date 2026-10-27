@@ -1,0 +1,75 @@
+{{define "content"}}
+<section class="card">
+  {{template "steps" 2}}
+  {{with .Data.PR}}<a class="chip" href="{{.URL}}">{{.Repo}}#{{.Number}}</a>{{end}}
+  <h1>Review and sign</h1>
+  <p class="lead">Read the agreement, then fill in the details below.</p>
+
+  {{with .Data.Errors}}
+  <div class="errors" role="alert">
+    <ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+
+  <article class="agreement scroll" tabindex="0" aria-label="Contributor License Agreement">{{.Data.CLA.HTML}}</article>
+  <p class="meta after-agreement">Revision <a href="{{.Data.CLA.URL}}"><code>{{.Data.CLA.Revision}}</code></a></p>
+
+  <form method="post" action="/sign">
+    <input type="hidden" name="csrf" value="{{.Session.CSRF}}">
+    <input type="hidden" name="revision" value="{{.Data.CLA.Revision}}">
+    {{with .Data.PR}}
+    <input type="hidden" name="repo" value="{{.Repo}}">
+    <input type="hidden" name="pr" value="{{.Number}}">
+    {{end}}
+
+    <div class="field">
+      <label for="name">Full name</label>
+      <input id="name" name="name" value="{{.Data.Name}}" maxlength="200" required autocomplete="name">
+    </div>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <select id="email" name="email" required>
+        {{$picked := .Data.Email}}
+        {{range .Session.Emails}}<option value="{{.}}"{{if eq . $picked}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+      {{if .Session.Emails}}
+      <p class="hint">Verified addresses of your GitHub account.</p>
+      {{else}}
+      <p class="hint">Your GitHub account has no verified email address. Verify one on GitHub, then log in again.</p>
+      {{end}}
+    </div>
+
+    <fieldset>
+      <legend>I am signing</legend>
+      <div class="options">
+        <label class="option">
+          <input type="radio" name="category" value="individual"{{if eq .Data.Category "individual"}} checked{{end}}>
+          <span><strong>For myself</strong><small>The copyright in your work is yours, not an employer's.</small></span>
+        </label>
+        <label class="option">
+          <input type="radio" name="category" value="employer"{{if eq .Data.Category "employer"}} checked{{end}}>
+          <span><strong>For my employer</strong><small>Your employer holds the copyright. An admin then confirms the signature.</small></span>
+        </label>
+      </div>
+      <p class="hint">Either way the copyright stays with its owner: the agreement grants a license to use the contribution, it does not transfer ownership.</p>
+      <div class="employer">
+        <p class="hint">Only needed when signing for your employer.</p>
+        <div class="field">
+          <label for="company">Employer</label>
+          <input id="company" name="company" value="{{.Data.Company}}" maxlength="200" autocomplete="organization">
+        </div>
+        <div class="field">
+          <label for="role">Your role</label>
+          <input id="role" name="role" value="{{.Data.Role}}" maxlength="100" autocomplete="organization-title">
+        </div>
+      </div>
+    </fieldset>
+
+    <label class="agree"><input type="checkbox" name="agree" value="yes" required> <span>I have read and agree to the Contributor License Agreement.</span></label>
+
+    <button type="submit" class="wide">Sign the agreement</button>
+    <p class="notice">Your name and email are stored encrypted; only {{.Site.LegalName}} holds the key to read them.</p>
+  </form>
+</section>
+{{end}}

@@ -1,0 +1,19 @@
+{{define "content"}}
+<section class="card">
+  {{template "steps" 1}}
+  {{with .Data.PR}}<a class="chip" href="{{.URL}}">{{.Repo}}#{{.Number}}</a>{{end}}
+  <h1>Sign the agreement</h1>
+  <p class="lead">
+    Please read the agreement below. To sign it, log in with GitHub at the end: the login tells
+    us which account is signing, and lets you pick one of its verified email addresses.
+  </p>
+
+  <article class="agreement" aria-label="Contributor License Agreement">{{.Data.CLA.HTML}}</article>
+  <p class="meta after-agreement">Revision <a href="{{.Data.CLA.URL}}"><code>{{.Data.CLA.Revision}}</code></a></p>
+
+  <p class="meta">We do not keep your GitHub token and never post anything on your behalf.</p>
+  <div class="actions">
+    <a class="button" href="{{.Data.LoginURL}}">Log in with GitHub to sign</a>
+  </div>
+</section>
+{{end}}

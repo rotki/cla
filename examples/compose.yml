@@ -1,0 +1,149 @@
+# A Docker Swarm stack for the CLA service behind Traefik. Replace
+# cla.example.org, the le certificate resolver, the public network, <org>,
+# <app id>, <client id>, the age key and the node name. Not tried against a
+# live Traefik yet. docs/deploy.md explains the choices.
+#
+#   docker stack deploy -c examples/compose.yml cla
+
+services:
+  cla:
+    image: rotki/cla:<version>@sha256:<digest>   # pinned by digest
+    environment:
+      BASE_URL: https://cla.example.org
+      GITHUB_ORG: <org>
+      GITHUB_APP_ID: "<app id>"
+      GITHUB_APP_CLIENT_ID: <client id>
+      AGE_RECIPIENT: age1...
+      AGE_KEY_ID: "2026-01"
+      BACKUP_DIR: /backups
+      # Secrets as files, never as plain variables.
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/cla_app_private_key
+      GITHUB_APP_CLIENT_SECRET_FILE: /run/secrets/cla_app_client_secret
+      GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/cla_webhook_secret
+      SESSION_KEY_FILE: /run/secrets/cla_session_key
+      DISCORD_WEBHOOK_URL_FILE: /run/secrets/cla_discord_webhook_url
+    secrets:
+      - cla_app_private_key
+      - cla_app_client_secret
+      - cla_webhook_secret
+      - cla_session_key
+      - cla_discord_webhook_url
+    volumes:
+      - cla-data:/data
+      - cla-backups:/backups      # shared with the backup job
+    networks:
+      - public
+    # The service writes only to the two volumes and needs no Linux
+    # capability: a read-only root filesystem and no capabilities at all.
+    read_only: true
+    cap_drop: [ALL]
+    # Time for a graceful stop before Swarm kills it (docs/deploy.md, Stopping).
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1                 # exactly one: the queue and limits live in memory
+      placement:
+        constraints: [node.hostname == <the node with the volumes>]
+      update_config:
+        order: stop-first         # one copy at a time
+      resources:
+        limits: { cpus: "0.5", memory: 128M }
+        reservations: { cpus: "0.1", memory: 64M }
+      labels:
+        traefik.enable: "true"
+        traefik.swarm.network: public            # the network Traefik reaches services on
+
+        # --- Shared protections -------------------------------------------------------------
+        # Canonical Host first: requestHost buckets key on the raw header, so `Cla.Example.Org`
+        # or `cla.example.org:1` would each get their own bucket and defeat the site-wide caps.
+        traefik.http.middlewares.cla-host.headers.customRequestHeaders.Host: cla.example.org
+        # Site-wide concurrency: rate limits say nothing about how long requests stay open.
+        traefik.http.middlewares.cla-global.inflightreq.amount: 30
+        traefik.http.middlewares.cla-global.inflightreq.sourceCriterion.requestHost: "true"
+        # Per-client concurrency. inFlightReq defaults to per-host, so the IP criterion must be
+        # explicit; IPv6 is grouped per /64 so one allocation cannot rotate through addresses.
+        traefik.http.middlewares.cla-inflight.inflightreq.amount: 8
+        traefik.http.middlewares.cla-inflight.inflightreq.sourceCriterion.ipStrategy.depth: 0
+        traefik.http.middlewares.cla-inflight.inflightreq.sourceCriterion.ipStrategy.ipv6Subnet: 64
+        traefik.http.middlewares.cla-compress.compress: "true"
+
+        # --- Pages: per-client rate limit (a page view is ~3 requests) --------------------
+        traefik.http.middlewares.cla-ratelimit.ratelimit.average: 60
+        traefik.http.middlewares.cla-ratelimit.ratelimit.burst: 120
+        traefik.http.middlewares.cla-ratelimit.ratelimit.period: 1m
+        traefik.http.middlewares.cla-ratelimit.ratelimit.sourceCriterion.ipStrategy.depth: 0
+        traefik.http.middlewares.cla-ratelimit.ratelimit.sourceCriterion.ipStrategy.ipv6Subnet: 64
+        traefik.http.routers.cla.rule: Host(`cla.example.org`)
+        traefik.http.routers.cla.entrypoints: https
+        traefik.http.routers.cla.tls.certresolver: le
+        traefik.http.routers.cla.middlewares: cla-host,cla-global,cla-inflight,cla-ratelimit,cla-compress
+        traefik.http.routers.cla.service: cla
+
+        # --- Login, signing and admin: stricter -----------------------------------------------
+        # A tight per-client limit on every route that logs in or changes something.
+        traefik.http.middlewares.cla-auth-ratelimit.ratelimit.average: 10
+        traefik.http.middlewares.cla-auth-ratelimit.ratelimit.burst: 20
+        traefik.http.middlewares.cla-auth-ratelimit.ratelimit.period: 1m
+        traefik.http.middlewares.cla-auth-ratelimit.ratelimit.sourceCriterion.ipStrategy.depth: 0
+        traefik.http.middlewares.cla-auth-ratelimit.ratelimit.sourceCriterion.ipStrategy.ipv6Subnet: 64
+        traefik.http.routers.cla-auth.rule: >-
+          Host(`cla.example.org`) && (Path(`/login`) || Path(`/logout`)
+          || PathPrefix(`/admin`) || (Path(`/sign`) && Method(`POST`)))
+        traefik.http.routers.cla-auth.priority: 90
+        traefik.http.routers.cla-auth.entrypoints: https
+        traefik.http.routers.cla-auth.tls.certresolver: le
+        traefik.http.routers.cla-auth.middlewares: cla-host,cla-global,cla-inflight,cla-auth-ratelimit
+        traefik.http.routers.cla-auth.service: cla
+
+        # --- OAuth callback: also capped site-wide ----------------------------------------------
+        # GitHub allows a GitHub App about 2,000 OAuth token requests an hour in total, and only
+        # the callback spends one, so only it gets a site-wide cap that keeps the service well
+        # under that (20/min = at most 1,200 an hour). Capping /login site-wide too would let two
+        # clients that only ever ask for the login page lock everyone else out of signing.
+        traefik.http.middlewares.cla-oauth-global.ratelimit.average: 20
+        traefik.http.middlewares.cla-oauth-global.ratelimit.burst: 40
+        traefik.http.middlewares.cla-oauth-global.ratelimit.period: 1m
+        traefik.http.middlewares.cla-oauth-global.ratelimit.sourceCriterion.requestHost: "true"
+        traefik.http.routers.cla-oauth.rule: Host(`cla.example.org`) && Path(`/oauth/callback`)
+        traefik.http.routers.cla-oauth.priority: 95
+        traefik.http.routers.cla-oauth.entrypoints: https
+        traefik.http.routers.cla-oauth.tls.certresolver: le
+        traefik.http.routers.cla-oauth.middlewares: cla-host,cla-global,cla-inflight,cla-oauth-global,cla-auth-ratelimit
+        traefik.http.routers.cla-oauth.service: cla
+
+        # --- Webhooks: no per-client limit -----------------------------------------------------
+        # GitHub sends bursts from a few addresses, so a per-client limit would drop real
+        # deliveries. A site-wide cap of its own bounds the load, and the body is capped at the
+        # proxy as well as in the service (1 MB; a pull_request delivery is typically tens of KB).
+        traefik.http.middlewares.cla-webhook-global.inflightreq.amount: 20
+        traefik.http.middlewares.cla-webhook-global.inflightreq.sourceCriterion.requestHost: "true"
+        traefik.http.middlewares.cla-webhook-body.buffering.maxRequestBodyBytes: 1048576
+        traefik.http.routers.cla-webhook.rule: Host(`cla.example.org`) && Path(`/webhook`) && Method(`POST`)
+        traefik.http.routers.cla-webhook.priority: 100
+        traefik.http.routers.cla-webhook.entrypoints: https
+        traefik.http.routers.cla-webhook.tls.certresolver: le
+        traefik.http.routers.cla-webhook.middlewares: cla-host,cla-webhook-global,cla-webhook-body
+        traefik.http.routers.cla-webhook.service: cla
+
+        traefik.http.services.cla.loadbalancer.server.port: 4000
+        traefik.http.services.cla.loadbalancer.healthcheck.path: /healthz
+        traefik.http.services.cla.loadbalancer.healthcheck.interval: 30s
+
+volumes:
+  cla-data:
+  cla-backups:
+
+networks:
+  public:
+    external: true
+
+secrets:
+  cla_app_private_key:
+    external: true
+  cla_app_client_secret:
+    external: true
+  cla_webhook_secret:
+    external: true
+  cla_session_key:
+    external: true
+  cla_discord_webhook_url:
+    external: true

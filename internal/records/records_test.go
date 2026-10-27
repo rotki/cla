@@ -3,6 +3,7 @@ package records
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -504,5 +505,80 @@ func TestABatchWhoseAppendFailsIsUndone(t *testing.T) {
 	_ = os.Chmod(logPath, 0o640)
 	if snapshot(t, dir) != before {
 		t.Fatal("the records were left changed without events")
+	}
+}
+
+// crash leaves dir as a process killed inside store.Journaled would: the
+// journal written, change made, and no event for it.
+func crash(t *testing.T, dir string, paths []string, change func()) {
+	t.Helper()
+	var journal []byte
+	_ = store.Journaled(dir, [][]string{paths}, func() error {
+		var err error
+		journal, err = os.ReadFile(filepath.Join(dir, store.JournalFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("killed")
+	})
+	change()
+	write(t, dir, store.JournalFile, string(journal))
+}
+
+func TestCLAToolFinishesAnInterruptedChange(t *testing.T) {
+	k := newKey(t, "2026-01")
+	dir := dataDir(t, k)
+	path := filepath.Join(dir, filepath.FromSlash(store.RecordPath(store.SignedDir, 900)))
+	crash(t, dir, []string{path}, func() {
+		writeRec(t, dir, store.SignedDir, record(t, k, store.Record{GitHubID: 900, Login: "mallory", Category: store.Individual}, seal.Personal{Name: "M", Email: "m@example.com"}))
+	})
+
+	// Verify only reports it.
+	report, err := Verify(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawJournal bool
+	for _, p := range report.Problems {
+		sawJournal = sawJournal || p.Path == store.JournalFile
+	}
+	if !sawJournal {
+		t.Fatalf("the journal was not reported: %+v", report.Problems)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("verify changed the data directory")
+	}
+
+	// Any writing command finishes it first: here rekey, which would
+	// otherwise refuse a directory with problems.
+	newK := newKey(t, "2027-01")
+	if _, err := Rekey(dir, []age.Identity{k.identity}, newK.sealer, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("the record without an event is still there")
+	}
+	if report, err := Verify(dir, nil); err != nil || !report.OK() {
+		t.Fatalf("after rekey: %+v %v", report, err)
+	}
+}
+
+func TestImportFinishesAnInterruptedChange(t *testing.T) {
+	k := newKey(t, "2026-01")
+	dir := dataDir(t, k)
+	path := filepath.Join(dir, filepath.FromSlash(store.RecordPath(store.SignedDir, 900)))
+	crash(t, dir, []string{path}, func() {
+		writeRec(t, dir, store.SignedDir, record(t, k, store.Record{GitHubID: 900, Login: "mallory", Category: store.Individual}, seal.Personal{Name: "M", Email: "m@example.com"}))
+	})
+	export := `[{"user":"dave","userId":"400","created_at":"2020-05-01T10:00:00Z","gist_version":"v1",
+	  "custom_fields":"{\"name\":\"Dave\",\"email\":\"dave@example.com\",\"category\":\"I am signing on behalf of myself.\"}"}]`
+	if _, err := Import([]byte(export), dir, k.sealer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("the record without an event is still there")
+	}
+	if report, err := Verify(dir, nil); err != nil || !report.OK() || report.Records != 4 {
+		t.Fatalf("after import: %+v %v", report, err)
 	}
 }

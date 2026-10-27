@@ -59,6 +59,10 @@ var ErrNotFound = errors.New("record not found")
 // admin resolves it by hand.
 var ErrConflict = errors.New("account already has a different signature on file")
 
+// ErrStale is returned when an admin's decision names a pending record that
+// was replaced since the page showed it.
+var ErrStale = errors.New("pending record changed since it was shown")
+
 // RepoConfig is config.json. Changing it needs no redeploy: the next refresh
 // picks it up and logs it.
 type RepoConfig struct {
@@ -205,8 +209,13 @@ func (s *Store) Refresh(_ context.Context) error {
 	return s.refreshLocked()
 }
 
-// refreshLocked is Refresh for a caller holding both locks.
+// refreshLocked is Refresh for a caller holding both locks. A change an
+// earlier process left half done is finished first, so no record whose
+// event never landed is ever counted.
 func (s *Store) refreshLocked() error {
+	if _, err := RecoverJournal(s.dir); err != nil {
+		return err
+	}
 	next := &snapshot{grandfathered: map[int64]bool{}}
 	var err error
 	if next.signed, err = s.listIDs(SignedDir); err != nil {
@@ -619,35 +628,27 @@ func (s *Store) Create(_ context.Context, rec Record) error {
 			return ErrExists
 		}
 		path := s.path(RecordPath(dir, rec.GitHubID))
-		digest, err := WriteRecord(path, rec)
-		if err != nil {
+		return Journaled(s.dir, [][]string{{path}}, func() error {
+			digest, err := WriteRecord(path, rec)
+			if err != nil {
+				return err
+			}
+			_, err = audit.Append(logPath, audit.Event{Time: s.now(), Action: action, Subject: rec.Subject(), Actor: "signer", Digest: digest})
 			return err
-		}
-		e, err := audit.Append(logPath, audit.Event{Time: s.now(), Action: action, Subject: rec.Subject(), Actor: "signer", Digest: digest})
-		if err != nil {
-			// A record without its event would count as signed while the
-			// signer is told it failed, and fail every verify after.
-			return undoUnlessLogged(logPath, e, err, func() error { return RemoveRecord(path) })
-		}
-		return nil
+		})
 	})
 }
 
-// undoUnlessLogged handles an append that failed: when the event is not in
-// the log, it undoes the change and returns the error; when it is (the
-// write landed, the sync or close failed), the change stands, since undoing
-// it would leave an event no file matches, and it returns nil.
-func undoUnlessLogged(logPath string, e audit.Event, appendErr error, undo func() error) error {
-	if n, err := audit.Written(logPath, []audit.Event{e}); err == nil && n == 1 {
-		slog.Warn("an audit event was written although its append reported an error; keeping the change", "error", appendErr)
-		return nil
-	}
-	return errors.Join(appendErr, undo())
+// PendingRecord is a pending record with the digest of its file, which a
+// decision on it must name; see Confirm.
+type PendingRecord struct {
+	Record
+	Digest string
 }
 
 // PendingRecords returns the employer signatures waiting for an admin,
 // skipping any that are already signed.
-func (s *Store) PendingRecords(_ context.Context) ([]Record, error) {
+func (s *Store) PendingRecords(_ context.Context) ([]PendingRecord, error) {
 	s.mu.RLock()
 	var ids []int64
 	if s.snap != nil {
@@ -660,32 +661,33 @@ func (s *Store) PendingRecords(_ context.Context) ([]Record, error) {
 	s.mu.RUnlock()
 	slices.Sort(ids)
 
-	records := make([]Record, 0, len(ids))
+	records := make([]PendingRecord, 0, len(ids))
 	for _, id := range ids {
-		rec, err := ReadRecord(s.path(RecordPath(PendingDir, id)))
+		rec, digest, err := readRecordDigest(s.path(RecordPath(PendingDir, id)))
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, rec)
+		records = append(records, PendingRecord{Record: rec, Digest: digest})
 	}
 	return records, nil
 }
 
 // Confirm moves a pending employer signature into signatures/, recording the
-// admin who confirmed it.
-func (s *Store) Confirm(_ context.Context, id int64, admin string, now time.Time) error {
+// admin who confirmed it. digest is the pending record's PendingRecord.Digest as
+// the admin saw it: if the record was replaced since, nothing is changed and
+// ErrStale is returned, so a stale page never confirms details nobody saw.
+func (s *Store) Confirm(_ context.Context, id int64, digest, admin string, now time.Time) error {
 	return s.change(func(logPath string) error {
 		pendingPath := s.path(RecordPath(PendingDir, id))
-		rec, err := ReadRecord(pendingPath)
+		rec, err := readPending(pendingPath, digest)
 		if err != nil {
 			return err
 		}
 		signedPath := s.path(RecordPath(SignedDir, id))
-		var digest string
-		wrote := false
+		write := false
 		prev, err := ReadRecord(signedPath)
 		switch {
 		case err == nil:
@@ -695,61 +697,76 @@ func (s *Store) Confirm(_ context.Context, id int64, admin string, now time.Time
 			if !prev.SignedAt.Equal(rec.SignedAt) || prev.Category != Employer || prev.Salt != rec.Salt {
 				return ErrConflict
 			}
-			data, err := os.ReadFile(signedPath)
-			if err != nil {
-				return err
-			}
-			digest = audit.Digest(data)
 		case errors.Is(err, ErrNotFound):
 			rec.ConfirmedBy = admin
 			rec.ConfirmedAt = now.UTC()
-			// Signed and logged first, then the pending file removed: a crash
-			// in between leaves the account signed and a stale pending file
-			// that is ignored, and confirming again finishes the job.
-			if digest, err = WriteRecord(signedPath, rec); err != nil {
-				return err
-			}
-			wrote = true
+			write = true
 		default:
 			return err
 		}
-		e, err := audit.Append(logPath, audit.Event{Time: s.now(), Action: audit.Confirmed, Subject: rec.Subject(), Actor: "admin:" + admin, Digest: digest})
-		if err != nil {
-			err = undoUnlessLogged(logPath, e, err, func() error {
-				if wrote {
-					return RemoveRecord(signedPath)
+		return Journaled(s.dir, [][]string{{signedPath, pendingPath}}, func() error {
+			var signed string
+			if write {
+				if signed, err = WriteRecord(signedPath, rec); err != nil {
+					return err
 				}
-				return nil
-			})
-			if err != nil {
+			} else {
+				data, err := os.ReadFile(signedPath)
+				if err != nil {
+					return err
+				}
+				signed = audit.Digest(data)
+			}
+			// Both files change before the event, so the journal covers them
+			// as one: either the event landed and both stand, or both are
+			// put back.
+			if err := RemoveRecord(pendingPath); err != nil {
 				return err
 			}
-		}
-		return RemoveRecord(pendingPath)
+			_, err := audit.Append(logPath, audit.Event{Time: s.now(), Action: audit.Confirmed, Subject: rec.Subject(), Actor: "admin:" + admin, Digest: signed})
+			return err
+		})
 	})
 }
 
-// Reject removes a pending employer signature.
-func (s *Store) Reject(_ context.Context, id int64, admin string) error {
+// Reject removes a pending employer signature. digest is as for Confirm.
+func (s *Store) Reject(_ context.Context, id int64, digest, admin string) error {
 	return s.change(func(logPath string) error {
 		pendingPath := s.path(RecordPath(PendingDir, id))
-		rec, err := ReadRecord(pendingPath)
+		rec, err := readPending(pendingPath, digest)
 		if err != nil {
 			return err
 		}
-		original, err := os.ReadFile(pendingPath)
-		if err != nil {
+		return Journaled(s.dir, [][]string{{pendingPath}}, func() error {
+			if err := RemoveRecord(pendingPath); err != nil {
+				return err
+			}
+			_, err := audit.Append(logPath, audit.Event{Time: s.now(), Action: audit.Rejected, Subject: rec.Subject(), Actor: "admin:" + admin})
 			return err
-		}
-		if err := RemoveRecord(pendingPath); err != nil {
-			return err
-		}
-		e, err := audit.Append(logPath, audit.Event{Time: s.now(), Action: audit.Rejected, Subject: rec.Subject(), Actor: "admin:" + admin})
-		if err != nil {
-			// Put the same bytes back, so the file still matches the event
-			// that created it.
-			return undoUnlessLogged(logPath, e, err, func() error { return WriteFile(pendingPath, original) })
-		}
-		return nil
+		})
 	})
+}
+
+// readPending reads the pending record at path, provided its digest is
+// still digest.
+func readPending(path, digest string) (Record, error) {
+	rec, got, err := readRecordDigest(path)
+	if err == nil && got != digest {
+		return Record{}, ErrStale
+	}
+	return rec, err
+}
+
+// readRecordDigest is ReadRecord, also returning the file's digest.
+func readRecordDigest(path string) (Record, string, error) {
+	var rec Record
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return rec, "", ErrNotFound
+	}
+	if err != nil {
+		return rec, "", err
+	}
+	err = json.Unmarshal(data, &rec)
+	return rec, audit.Digest(data), err
 }

@@ -106,6 +106,13 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 		slog.Warn("quota low, skipping the reconcile sweep", "until", until)
 		return
 	}
+	if err := s.checker.RefreshTeam(ctx); err != nil {
+		if s.limited(err) {
+			return
+		}
+		// The sweep goes on with the team as last fetched.
+		slog.Warn("refreshing the exempt team failed", "error", err)
+	}
 
 	open, complete, err := s.sweep(ctx, s.orgQuery(), false)
 	if err != nil {
@@ -194,13 +201,13 @@ func (s *Sweeper) sweep(ctx context.Context, query string, all bool) (open map[c
 			known := knownStatus(pr.Commits.Nodes)
 			switch {
 			case all:
-				s.queue.Enqueue(check.Job{Ref: ref, Bulk: true, Hint: check.Hint{Known: known, Force: known == nil}})
+				s.queue.Enqueue(check.Job{Ref: ref, Bulk: true, Hint: check.Hint{Known: known.On(pr.HeadRefOid), Force: known == nil}})
 			case known == nil:
 				// No status from us at all, whatever we remember: report again.
 				s.queue.Enqueue(check.Job{Ref: ref, Background: true, Hint: check.Hint{Force: true}})
 			case known.State == "success":
 			case !s.checker.UpToDate(ref, pr.HeadRefOid):
-				s.queue.Enqueue(check.Job{Ref: ref, Background: true, Hint: check.Hint{Known: known}})
+				s.queue.Enqueue(check.Job{Ref: ref, Background: true, Hint: check.Hint{Known: known.On(pr.HeadRefOid)}})
 			}
 		}
 		if !data.Search.PageInfo.HasNextPage {

@@ -91,6 +91,14 @@ func verify(dir string, identities []age.Identity) (Report, error) {
 		report.Problems = append(report.Problems, Problem{Path: path, Reason: reason})
 	}
 
+	// Verify only reads; the next write by the service or cla-tool finishes
+	// the change, putting back any record its event does not cover.
+	if _, err := os.Stat(filepath.Join(dir, store.JournalFile)); err == nil {
+		add(store.JournalFile, "a change was interrupted; records it touched may lack their events until the next write finishes it")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return report, err
+	}
+
 	if err := verifyConfig(dir, add); err != nil {
 		return report, err
 	}
@@ -395,6 +403,9 @@ func Rekey(dir string, identities []age.Identity, sealer *seal.Sealer, dryRun bo
 			return err
 		}
 		defer unlock()
+		if _, err := store.RecoverJournal(dir); err != nil {
+			return err
+		}
 		report, err := verify(dir, nil)
 		if err != nil {
 			return err
@@ -426,14 +437,14 @@ func Rekey(dir string, identities []age.Identity, sealer *seal.Sealer, dryRun bo
 		var changes []change
 		for _, w := range work[start:end] {
 			path := filepath.Join(dir, filepath.FromSlash(w.f.path))
-			previous, err := os.ReadFile(path)
+			current, err := os.ReadFile(path)
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			if err != nil {
 				return nil, err
 			}
-			if audit.Digest(previous) != w.f.digest {
+			if audit.Digest(current) != w.f.digest {
 				continue
 			}
 			sealed, err := sealer.Seal(w.p)
@@ -442,7 +453,7 @@ func Rekey(dir string, identities []age.Identity, sealer *seal.Sealer, dryRun bo
 			}
 			rec := w.f.rec
 			rec.PII, rec.KeyID = sealed, sealer.KeyID()
-			changes = append(changes, change{path: path, rec: rec, action: audit.Rekeyed, previous: previous})
+			changes = append(changes, change{path: path, rec: rec, action: audit.Rekeyed})
 		}
 		changed += len(changes)
 		return changes, nil
@@ -454,13 +465,11 @@ func Rekey(dir string, identities []age.Identity, sealer *seal.Sealer, dryRun bo
 // A batch takes well under a second, so a signing waits at most that long.
 const batchSize = 100
 
-// change is one record write in a batch. previous holds the file's bytes
-// before the change, nil for a new file, so a failed batch can be undone.
+// change is one record write in a batch.
 type change struct {
-	path     string
-	rec      store.Record
-	action   string
-	previous []byte
+	path   string
+	rec    store.Record
+	action string
 }
 
 // inBatches calls fn for consecutive ranges of n items, and applies the
@@ -476,6 +485,9 @@ func inBatches(dir string, n int, fn func(start, end int) ([]change, error)) err
 				return err
 			}
 			defer unlock()
+			if _, err := store.RecoverJournal(dir); err != nil {
+				return err
+			}
 			if chain, err = audit.ScanFrom(logPath, chain, nil); err != nil {
 				return fmt.Errorf("the audit log is broken, refusing to add to it: %w", err)
 			}
@@ -483,7 +495,7 @@ func inBatches(dir string, n int, fn func(start, end int) ([]change, error)) err
 			if err != nil {
 				return err
 			}
-			return applyBatch(logPath, changes)
+			return applyBatch(dir, logPath, changes)
 		}()
 		if err != nil {
 			return err
@@ -493,51 +505,35 @@ func inBatches(dir string, n int, fn func(start, end int) ([]change, error)) err
 }
 
 // applyBatch writes the records, syncs each directory once and appends all
-// their events in one write. If the append fails, the files are put back as
-// they were, so no record is left without its event.
-func applyBatch(logPath string, changes []change) error {
+// their events in one write. Under a journal: any record whose event did not
+// land is put back as it was, even if the process dies first.
+func applyBatch(dir, logPath string, changes []change) error {
 	if len(changes) == 0 {
 		return nil
 	}
-	dirs := map[string]bool{}
-	events := make([]audit.Event, 0, len(changes))
-	undo := func(from int) error {
-		var errs []error
-		for _, c := range changes[from:] {
-			if c.previous == nil {
-				errs = append(errs, ignoreMissing(os.Remove(c.path)))
-			} else {
-				errs = append(errs, store.WriteFile(c.path, c.previous))
+	groups := make([][]string, len(changes))
+	for i, c := range changes {
+		groups[i] = []string{c.path}
+	}
+	return store.Journaled(dir, groups, func() error {
+		dirs := map[string]bool{}
+		events := make([]audit.Event, 0, len(changes))
+		for _, c := range changes {
+			digest, err := store.WriteRecordFile(c.path, c.rec)
+			if err != nil {
+				return err
+			}
+			dirs[filepath.Dir(c.path)] = true
+			events = append(events, audit.Event{Action: c.action, Subject: c.rec.Subject(), Actor: actor, Digest: digest})
+		}
+		for d := range dirs {
+			if err := store.SyncDir(d); err != nil {
+				return err
 			}
 		}
-		return errors.Join(errs...)
-	}
-	for _, c := range changes {
-		digest, err := store.WriteRecordFile(c.path, c.rec)
-		if err != nil {
-			return errors.Join(err, undo(0))
-		}
-		dirs[filepath.Dir(c.path)] = true
-		events = append(events, audit.Event{Action: c.action, Subject: c.rec.Subject(), Actor: actor, Digest: digest})
-	}
-	for d := range dirs {
-		if err := store.SyncDir(d); err != nil {
-			return errors.Join(err, undo(0))
-		}
-	}
-	if written, err := audit.AppendAll(logPath, events); err != nil {
-		// Keep the changes whose events landed before the failure.
-		n, _ := audit.Written(logPath, written)
-		return errors.Join(err, undo(n))
-	}
-	return nil
-}
-
-func ignoreMissing(err error) error {
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+		_, err := audit.AppendAll(logPath, events)
+		return err
+	})
 }
 
 // actor names cla-tool in the audit log.

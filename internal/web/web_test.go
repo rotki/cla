@@ -211,6 +211,18 @@ func csrfFrom(t *testing.T, body string) string {
 	return m[1]
 }
 
+var digestField = regexp.MustCompile(`name="digest" value="([^"]+)"`)
+
+// digestFrom is the first pending record's digest on the admin page.
+func digestFrom(t *testing.T, body string) string {
+	t.Helper()
+	m := digestField.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no digest field in:\n%s", body)
+	}
+	return m[1]
+}
+
 // waitFor polls cond, holding the fake's lock, until it holds or times out.
 func (h *harness) waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -360,7 +372,12 @@ func TestEmployerSignatureNeedsAdmin(t *testing.T) {
 	if !strings.Contains(body, "Example GmbH") || !strings.Contains(body, "@newbie") {
 		t.Fatalf("admin page:\n%s", body)
 	}
-	resp, _ := h.post(t, "/admin/confirm", url.Values{"csrf": {csrfFrom(t, body)}, "id": {"400"}})
+	// A form for another version of the record is refused.
+	resp, _ := h.post(t, "/admin/confirm", url.Values{"csrf": {csrfFrom(t, body)}, "id": {"400"}, "digest": {"sha256:stale"}})
+	if resp.StatusCode != http.StatusConflict || h.file("pending/400.json") == "" {
+		t.Fatalf("confirm from a stale form: %d", resp.StatusCode)
+	}
+	resp, _ = h.post(t, "/admin/confirm", url.Values{"csrf": {csrfFrom(t, body)}, "id": {"400"}, "digest": {digestFrom(t, body)}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("confirm: %d", resp.StatusCode)
 	}
@@ -884,5 +901,60 @@ func TestPagesOfferSigningOnlyToWhoStillNeedsTo(t *testing.T) {
 		if strings.Contains(body, "Read and sign the agreement") || strings.Contains(body, "Sign the agreement</a>") || !strings.Contains(body, "You have signed the agreement") {
 			t.Fatalf("a signer is offered to sign on %s:\n%s", path, body)
 		}
+	}
+}
+
+func TestAStatusReadFromAnOlderHeadIsNotReused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	pr := check.Ref{Repo: "rotki", Number: 1}
+	if err := h.checker.CheckPR(ctx, pr, check.Hint{}); err != nil {
+		t.Fatal(err)
+	}
+	old := h.waitForStatus(t, "pending")
+
+	// The sweep read that status, then a push moved the head before the
+	// check ran; a fresh checker remembers nothing, as after a restart.
+	h.gh.Mu.Lock()
+	p := h.gh.PRs["rotki#1"]
+	p.HeadSHA = "head2"
+	h.gh.PRs["rotki#1"] = p
+	h.gh.Mu.Unlock()
+	checker, _, _ := h.sweeper(t)
+	known := check.KnownStatus{Status: check.Status{State: old.State, Description: old.Description}, SHA: "head1"}
+	if err := checker.CheckPR(ctx, pr, check.Hint{Known: &known}); err != nil {
+		t.Fatal(err)
+	}
+	if status := h.waitForStatus(t, "pending"); status.SHA != "head2" {
+		t.Fatalf("the new head got no status: %+v", status)
+	}
+}
+
+func TestANewBaseWithAnUnlinkedAuthorIsCheckedAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	pr := check.Ref{Repo: "rotki", Number: 1}
+	h.gh.Mu.Lock()
+	h.gh.PRs["rotki#1"] = fakegh.PR{Open: true, HeadSHA: "head1", Commits: []fakegh.Commit{
+		{AuthorName: "Old Timer", AuthorID: 100, AuthorLogin: "oldtimer"},
+	}}
+	h.gh.Mu.Unlock()
+	if err := h.checker.CheckPR(ctx, pr, check.Hint{}); err != nil {
+		t.Fatal(err)
+	}
+	h.waitForStatus(t, "success")
+
+	// Moved to an older base: the same head now carries a commit whose
+	// author has no GitHub account.
+	h.gh.Mu.Lock()
+	p := h.gh.PRs["rotki#1"]
+	p.Commits = append(p.Commits, fakegh.Commit{AuthorName: "Someone", AuthorEmail: "someone@example.com"})
+	h.gh.PRs["rotki#1"] = p
+	h.gh.Mu.Unlock()
+	if err := h.checker.CheckPR(ctx, pr, check.Hint{}); err != nil {
+		t.Fatal(err)
+	}
+	if status := h.waitForStatus(t, "pending"); status.SHA != "head1" {
+		t.Fatalf("status %+v", status)
 	}
 }

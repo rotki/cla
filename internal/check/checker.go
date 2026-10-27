@@ -101,6 +101,11 @@ func (c *Checker) fingerprint(authors []Author, botPR bool) string {
 	for _, a := range authors {
 		if a.Linked() {
 			fmt.Fprintf(&b, "|%d:%d", a.ID, c.store.StandingOf(a.ID))
+		} else {
+			// Unlinked authors fail the check, so a change in who they are
+			// changes the result even at the same head commit: a pull
+			// request moved to another base can gain one.
+			fmt.Fprintf(&b, "|u:%q", a.Name)
 		}
 	}
 	return b.String()
@@ -113,6 +118,16 @@ func (c *Checker) UpToDate(ref Ref, headSHA string) bool {
 	l, ok := c.last[ref]
 	c.mu.Unlock()
 	return ok && l.inputs != "" && l.headSHA == headSHA && l.inputs == c.fingerprint(l.authors, l.botPR)
+}
+
+// RefreshTeam fetches the exempt team again if its cache expired. The
+// sweep calls it before deciding what is up to date: only a fetch changes
+// the team's version in the fingerprint, and nothing else fetches for a
+// pull request the sweep leaves alone, so without it a blocked author who
+// joined the team would stay blocked.
+func (c *Checker) RefreshTeam(ctx context.Context) error {
+	_, err := c.dir.TeamMembers(ctx, c.store.Config().ExemptTeam)
+	return err
 }
 
 // Context is the commit status name this checker reports under.
@@ -135,10 +150,25 @@ type Hint struct {
 	// Force re-checks and re-reports even when nothing seems to have
 	// changed, for a pull request whose status is missing on GitHub.
 	Force bool
-	// Known is the status GitHub shows on the head commit, when the caller
-	// has just read it. A computed status equal to it is not sent again,
-	// which matters after a restart, when nothing is remembered.
-	Known *Status
+	// Known is the status GitHub shows on a head commit, when the caller has
+	// just read it. A computed status equal to it is not sent again, which
+	// matters after a restart, when nothing is remembered. It is ignored
+	// when the head moved since: the new head has no status yet.
+	Known *KnownStatus
+}
+
+// KnownStatus is a status read from GitHub with the commit it is on.
+type KnownStatus struct {
+	Status
+	SHA string
+}
+
+// On is the status as read on commit sha; nil stays nil.
+func (s *Status) On(sha string) *KnownStatus {
+	if s == nil {
+		return nil
+	}
+	return &KnownStatus{Status: *s, SHA: sha}
 }
 
 // CheckPR evaluates one pull request and reports the result. Unless forced,
@@ -171,8 +201,8 @@ func (c *Checker) CheckPR(ctx context.Context, ref Ref, hint Hint) error {
 	c.mu.Unlock()
 	if hint.Force {
 		prev = lastCheck{}
-	} else if prev.headSHA == "" && hint.Known != nil {
-		prev = lastCheck{headSHA: pr.HeadSHA, status: *hint.Known}
+	} else if prev.headSHA == "" && hint.Known != nil && hint.Known.SHA == pr.HeadSHA {
+		prev = lastCheck{headSHA: pr.HeadSHA, status: hint.Known.Status}
 	}
 	if prev.headSHA == pr.HeadSHA && prev.inputs == inputs {
 		return nil

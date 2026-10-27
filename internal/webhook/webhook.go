@@ -81,6 +81,10 @@ type event struct {
 	PullRequest struct {
 		Number int `json:"number"`
 	} `json:"pull_request"`
+	// Changes is set on an edited event; Base when the base branch moved.
+	Changes struct {
+		Base *struct{} `json:"base"`
+	} `json:"changes"`
 	MergeGroup struct {
 		HeadSHA string `json:"head_sha"`
 	} `json:"merge_group"`
@@ -134,6 +138,12 @@ func (h *Handler) dispatch(kind string, ev event) {
 		switch ev.Action {
 		case "opened", "reopened", "synchronize":
 			h.queue.Enqueue(check.Job{Ref: ref})
+		case "edited":
+			// A new base changes which commits the pull request holds, and
+			// so its authors, without a new head commit.
+			if ev.Changes.Base != nil {
+				h.queue.Enqueue(check.Job{Ref: ref})
+			}
 		case "closed":
 			h.queue.Enqueue(check.Job{Ref: ref, Closed: true})
 		}

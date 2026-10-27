@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rotki/cla/internal/audit"
+	"github.com/rotki/cla/internal/store"
 )
 
 // Manifest describes one archive. It is written next to the archive after
@@ -65,6 +66,9 @@ func Backup(dir, outDir string, now time.Time, keep int) (Manifest, error) {
 		return m, err
 	}
 	defer unlock()
+	if _, err := store.RecoverJournal(dir); err != nil {
+		return m, err
+	}
 
 	report, err := verify(dir, nil)
 	if err != nil {

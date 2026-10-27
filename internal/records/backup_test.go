@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rotki/cla/internal/seal"
 	"github.com/rotki/cla/internal/store"
 )
 
@@ -210,5 +211,21 @@ func TestPruneKeepsTheNewestVerifiedArchive(t *testing.T) {
 	want := "cla-20261002T020000Z cla-20261002T020000Z cla-20261003T020000Z-unverified cla-20261003T020000Z-unverified cla-20261004T020000Z-unverified cla-20261004T020000Z-unverified"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("kept %v", names)
+	}
+}
+
+func TestBackupFinishesAnInterruptedChangeFirst(t *testing.T) {
+	k := newKey(t, "2026-01")
+	dir := dataDir(t, k)
+	path := filepath.Join(dir, filepath.FromSlash(store.RecordPath(store.SignedDir, 900)))
+	crash(t, dir, []string{path}, func() {
+		writeRec(t, dir, store.SignedDir, record(t, k, store.Record{GitHubID: 900, Login: "mallory", Category: store.Individual}, seal.Personal{Name: "M", Email: "m@example.com"}))
+	})
+	m, err := Backup(dir, t.TempDir(), time.Date(2026, 10, 27, 2, 0, 0, 0, time.UTC), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.OK || m.Records != 3 {
+		t.Fatalf("manifest %+v", m)
 	}
 }

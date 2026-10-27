@@ -79,7 +79,7 @@ type Rechecker interface {
 }
 
 type adminData struct {
-	Records     []store.Record
+	Records     []store.PendingRecord
 	LastRecheck time.Time
 	NextRecheck time.Time
 	Running     bool
@@ -130,18 +130,18 @@ func (s *Server) adminRecheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminConfirm(w http.ResponseWriter, r *http.Request) {
-	s.adminAction(w, r, func(id int64, admin string) error {
+	s.adminAction(w, r, func(id int64, digest, admin string) error {
 		ctx, cancel := detached()
 		defer cancel()
-		return s.Store.Confirm(ctx, id, admin, s.now())
+		return s.Store.Confirm(ctx, id, digest, admin, s.now())
 	})
 }
 
 func (s *Server) adminReject(w http.ResponseWriter, r *http.Request) {
-	s.adminAction(w, r, func(id int64, admin string) error {
+	s.adminAction(w, r, func(id int64, digest, admin string) error {
 		ctx, cancel := detached()
 		defer cancel()
-		return s.Store.Reject(ctx, id, admin)
+		return s.Store.Reject(ctx, id, digest, admin)
 	})
 }
 
@@ -159,7 +159,10 @@ func (s *Server) adminPost(w http.ResponseWriter, r *http.Request) *session {
 	return sess
 }
 
-func (s *Server) adminAction(w http.ResponseWriter, r *http.Request, act func(id int64, admin string) error) {
+// adminAction applies a decision on one pending signature. The form names
+// the record by its digest as well as the account, so a page loaded before
+// the record was replaced cannot decide on the replacement.
+func (s *Server) adminAction(w http.ResponseWriter, r *http.Request, act func(id int64, digest, admin string) error) {
 	sess := s.adminPost(w, r)
 	if sess == nil {
 		return
@@ -170,10 +173,13 @@ func (s *Server) adminAction(w http.ResponseWriter, r *http.Request, act func(id
 		return
 	}
 
-	err = act(id, sess.Login)
+	err = act(id, r.PostForm.Get("digest"), sess.Login)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		// Already handled, perhaps by another admin.
+	case errors.Is(err, store.ErrStale):
+		s.fail(w, r, http.StatusConflict, "This signature changed since the page was loaded. Nothing was changed; reload the page to review it again.")
+		return
 	case errors.Is(err, store.ErrConflict):
 		s.fail(w, r, http.StatusConflict, "This account already has a different signature on file. Nothing was changed; resolve it in the data directory.")
 		return

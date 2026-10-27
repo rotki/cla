@@ -82,6 +82,23 @@ func TestPullRequestEventsQueueChecks(t *testing.T) {
 	if len(q.jobs) != 2 {
 		t.Fatalf("an unrelated action queued work: %+v", q.jobs)
 	}
+
+	// A title edit changes no commits; a new base does.
+	title := `{"action":"edited","installation":{"id":42},"repository":{"name":"rotki"},"pull_request":{"number":1},"changes":{"title":{"from":"old"}}}`
+	deliver(h, "pull_request", "d4", title, sign(title))
+	if len(q.jobs) != 2 {
+		t.Fatalf("a title edit queued work: %+v", q.jobs)
+	}
+	null := `{"action":"edited","installation":{"id":42},"repository":{"name":"rotki"},"pull_request":{"number":1},"changes":{"base":null}}`
+	deliver(h, "pull_request", "d6", null, sign(null))
+	if len(q.jobs) != 2 {
+		t.Fatalf("a null base queued work: %+v", q.jobs)
+	}
+	base := `{"action":"edited","installation":{"id":42},"repository":{"name":"rotki"},"pull_request":{"number":1},"changes":{"base":{"ref":{"from":"develop"},"sha":{"from":"abc"}}}}`
+	deliver(h, "pull_request", "d5", base, sign(base))
+	if len(q.jobs) != 3 || q.jobs[2].Ref != (check.Ref{Repo: "rotki", Number: 1}) {
+		t.Fatalf("a base change queued no check: %+v", q.jobs)
+	}
 }
 
 func TestMergeGroupPassesThrough(t *testing.T) {

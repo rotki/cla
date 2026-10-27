@@ -16,6 +16,7 @@ grandfathered.json     account IDs treated as signed (earlier contributors)
 signatures/<id>.json   signed
 pending/<id>.json      employer signature awaiting an admin
 audit/events.jsonl     the audit log
+journal.json           a change in progress; present only while one runs, or after a crash
 ```
 
 A record stores the GitHub ID, login, date, CLA revision, category, the pull request, and for
@@ -23,6 +24,13 @@ employers the company and role, in plain text. The signer's name and email are e
 a public key; the service cannot decrypt them. No IP address, browser details or GitHub token is
 stored. Writes go through a synced temporary file and a rename, so a crash never leaves half a
 record.
+
+A record changes before its audit event is appended, so a crash in between could leave a
+signature no event accounts for. Each change therefore first writes `journal.json` with the
+earlier contents of the files it touches and the log's length. Whoever takes the lock next (the
+service at startup and before each write, `cla-tool` before each batch, the backup) puts back
+every file whose event never landed and removes the journal; a change whose event did land is
+kept. `cla-tool verify` only reports a journal it finds.
 
 ## The audit log
 

@@ -457,6 +457,32 @@ legend { margin-bottom: 0.5rem; padding: 0; font-size: 0.875rem; font-weight: 60
 
 .notice { margin: 1rem 0 0; color: var(--subtle); font-size: 0.8125rem; text-align: center; }
 
+/* Where the signed-in visitor stands: the answer they came for, so it reads
+   as a result, not a footnote. */
+.covered {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--primary-ring);
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+}
+.covered-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--link);
+  font-weight: 700;
+}
+.covered.ok { border-color: var(--success); background: var(--success-soft); }
+.covered.ok .covered-icon { color: var(--success); }
+
 .errors {
   margin-bottom: 1.25rem;
   padding: 0.75rem 1rem;

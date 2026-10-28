@@ -135,7 +135,16 @@ code { font-family: var(--mono); font-size: 0.875em; }
   width: auto;
   height: 1.9rem;
 }
-.brand small { color: var(--subtle); font-size: 0.875rem; font-weight: 500; }
+/* One flex item for the name and the subtitle, so they share a baseline, and
+   centred on the logo by their cap height rather than their line box: system
+   fonts differ in how much space they leave above and below the letters, which
+   left the text visibly higher than the logo on some of them. Browsers without
+   text-box trimming fall back to the tighter line box. */
+.brand-name {
+  line-height: 1;
+  text-box: trim-both cap alphabetic;
+}
+.brand small { margin-left: 0.35rem; color: var(--subtle); font-size: 0.875rem; font-weight: 500; }
 
 .who {
   display: inline-flex;

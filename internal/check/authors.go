@@ -111,31 +111,31 @@ func fetchPR(ctx context.Context, c *githubapp.Client, owner, repo string, numbe
 
 // authorOf picks the account a commit is attributed to: the author's, else
 // the committer's, else none. GitHub's own web-flow committer is skipped, so a
-// web edit by an unlinked author does not count as GitHub's.
+// web edit by an unlinked author does not count as GitHub's, and so is a bot
+// committer: the commit is still the unlinked person's, not the bot's.
 //
 // A git name and email are free text, so a linked account always counts as
 // that person whatever the name says. A commit by a bot, linked to its App
 // account (as renovate's are) or only claiming to be a bot's, is marked Bot
-// for Evaluate to judge, never exempted here.
+// for Evaluate to judge, never exempted here. Only GitHub App accounts have
+// "[bot]" in their login, but the link comes from the commit's email, which
+// anyone can set to a bot's noreply address, so a linked bot is no more
+// trusted than one that only claims to be a bot.
 func authorOf(author, committer gitActor) Author {
 	if author.User != nil {
-		return linkedAuthor(author.User.DatabaseID, author.User.Login)
+		return Author{ID: author.User.DatabaseID, Login: author.User.Login, Bot: isBotLogin(author.User.Login)}
 	}
 	if claimsBot(author) {
 		return Author{Name: author.Name, Bot: true}
 	}
-	if committer.User != nil && committer.User.Login != "web-flow" {
-		return linkedAuthor(committer.User.DatabaseID, committer.User.Login)
+	if committer.User != nil && committer.User.Login != "web-flow" && !isBotLogin(committer.User.Login) {
+		return Author{ID: committer.User.DatabaseID, Login: committer.User.Login}
 	}
 	return Author{Name: author.Name}
 }
 
-// linkedAuthor is the account a commit is linked to. Only GitHub App accounts
-// have "[bot]" in their login. The link itself comes from the commit's email,
-// which anyone can set to a bot's noreply address, so a linked bot is no more
-// trusted than one that only claims to be a bot.
-func linkedAuthor(id int64, login string) Author {
-	return Author{ID: id, Login: login, Bot: strings.HasSuffix(login, "[bot]")}
+func isBotLogin(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
 }
 
 // claimsBot recognises an unlinked commit written as a GitHub App account:

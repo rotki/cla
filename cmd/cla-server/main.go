@@ -98,6 +98,9 @@ func run() error {
 	if cfg.DiscordWebhookURL == "" {
 		slog.Warn("DISCORD_WEBHOOK_URL is not set: alerts only go to this log")
 	}
+	if !cfg.AnchorDiscord && cfg.BackupDir == "" {
+		slog.Warn("audit anchors never leave this host, which can rewrite them with the log: set BACKUP_DIR and ship the archives, or AUDIT_ANCHOR_DISCORD")
+	}
 	st := store.New(cfg.DataDir)
 	agreement := store.NewAgreement(githubapp.NewPublicClient(cfg.GitHubAPIURL))
 	directory := org.New(gh, cfg.Org)
@@ -258,20 +261,19 @@ func anchor(ctx context.Context, st *store.Store, alerts *alert.Notifier, interv
 			alerts.Report(alert.AuditBroken, alert.Detail{})
 		case chain.Events == 0 || chain.Head == published.Hash:
 			alerts.Resolve(alert.AuditBroken)
-		case !post:
-			alerts.Resolve(alert.AuditBroken)
-			slog.Info("audit anchor", "seq", chain.Events, "hash", chain.Head)
-			published = audit.Event{Seq: chain.Events, Hash: chain.Head}
 		default:
 			alerts.Resolve(alert.AuditBroken)
-			switch err := alerts.Anchor(ctx, chain.Events, chain.Head); {
-			case errors.Is(err, alert.ErrNoWebhook):
-				// Logged only; startup already warned.
-				published = audit.Event{Seq: chain.Events, Hash: chain.Head}
-			case err != nil:
+			var err error
+			if post {
+				err = alerts.Anchor(ctx, chain.Events, chain.Head) // logs it too
+			} else {
+				slog.Info("audit anchor", "seq", chain.Events, "hash", chain.Head)
+			}
+			// Without a webhook the anchor is in the log only; startup warned.
+			if err != nil && !errors.Is(err, alert.ErrNoWebhook) {
 				slog.Error("publishing the audit anchor failed", "error", err, "retry_in", anchorRetry)
 				wait = min(interval, anchorRetry)
-			default:
+			} else {
 				published = audit.Event{Seq: chain.Events, Hash: chain.Head}
 			}
 		}

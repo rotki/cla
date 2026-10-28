@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -105,9 +106,15 @@ func (b *syncBuffer) String() string {
 
 func TestAnchorOnlyLogsUnlessPosting(t *testing.T) {
 	logs := &syncBuffer{}
-	prev := slog.Default()
+	// SetDefault also points the log package at the new handler, and setting
+	// the old default back does not undo that, so restore it by hand.
+	prev, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
 
 	st := dataDir(t)
 	d := &discord{}

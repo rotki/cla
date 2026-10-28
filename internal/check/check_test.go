@@ -65,10 +65,11 @@ func TestAuthorOf(t *testing.T) {
 			want:   Author{ID: 29139614, Login: "renovate[bot]", Bot: true},
 		},
 		{
-			name:      "an unlinked author falls back to a bot committer",
+			// The commit is the person's; a bot only committed it.
+			name:      "a bot committer is not a fallback",
 			author:    gitActor{Name: "A", Email: "a@laptop.local"},
 			committer: gitActor{Name: "x", User: user(9, "pre-commit-ci[bot]")},
-			want:      Author{ID: 9, Login: "pre-commit-ci[bot]", Bot: true},
+			want:      Author{Name: "A"},
 		},
 	}
 	for _, tc := range cases {
@@ -133,8 +134,20 @@ func TestBotCommitsNeedABotOpener(t *testing.T) {
 	if res := Evaluate(linked, NewRules(nil, nil, true), none); !res.OK() || res.Total() != 0 {
 		t.Fatalf("bot PR, linked bot: %+v", res)
 	}
-	if res := Evaluate(linked, NewRules(nil, nil, false), none); res.OK() {
+	// In a person's pull request it waits for a maintainer, not a signature.
+	res := Evaluate(linked, NewRules(nil, nil, false), none)
+	if res.OK() || len(res.Bots) != 1 || len(res.Unsigned) != 0 || len(res.Blocking()) != 0 {
 		t.Fatalf("human PR, linked bot: %+v", res)
+	}
+	if s := StatusFor(res); s.State != "pending" || !strings.Contains(s.Description, "maintainer") {
+		t.Fatalf("status %+v", s)
+	}
+	// An allowlisted bot account passes there too; a name alone does not.
+	if res := Evaluate(linked, NewRules([]string{"Renovate[bot]"}, nil, false), none); !res.OK() {
+		t.Fatalf("human PR, allowlisted bot: %+v", res)
+	}
+	if res := Evaluate(bot, NewRules([]string{"renovate[bot]"}, nil, false), none); res.OK() {
+		t.Fatalf("human PR, unlinked bot name on the allowlist: %+v", res)
 	}
 }
 
@@ -177,6 +190,10 @@ func TestComment(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("comment lacks %q:\n%s", want, body)
 		}
+	}
+	bots, _ := Comment(Result{Bots: []Author{{ID: 9, Login: "pre-commit-ci[bot]", Bot: true}}}, "SIGN", "c")
+	if !strings.Contains(bots, "[pre-commit-ci[bot]](https://github.com/apps/pre-commit-ci) (a bot account") || strings.Contains(bots, "SIGN") {
+		t.Errorf("bot line:\n%s", bots)
 	}
 	// Outside the inline-code git name, nothing may mention anyone.
 	if strings.Contains(strings.ReplaceAll(body, "`Eve *bold* @everyone`", ""), "@") {

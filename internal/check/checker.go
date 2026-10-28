@@ -73,9 +73,9 @@ type Options struct {
 	BaseURL       string
 	// BotLogin returns "<app slug>[bot]", the author of our comments.
 	BotLogin func() string
-	// NoComments leaves pull requests without the sticky comment, so only
-	// the status reports: for a shadow run next to another CLA tool, whose
-	// own comment already asks people to sign.
+	// NoComments posts no new sticky comment, so only the status reports: for
+	// a shadow run next to another CLA tool, whose own comment already asks
+	// people to sign. Comments already there are still kept up to date.
 	NoComments bool
 }
 
@@ -227,11 +227,12 @@ func (c *Checker) CheckPR(ctx context.Context, ref Ref, hint Hint) error {
 		c.last[ref] = lastCheck{headSHA: pr.HeadSHA, status: status, at: time.Now()}
 		c.mu.Unlock()
 	}
-	if !c.noComments {
-		body, needed := Comment(res, signURL, c.baseURL+"/cla")
-		if err := c.upsertComment(ctx, ref, body, needed); err != nil {
-			return err
-		}
+	// With comments off, a comment from before is still kept up to date, so
+	// it never asks someone to sign after they did; only new ones are not
+	// posted.
+	body, needed := Comment(res, signURL, c.baseURL+"/cla")
+	if err := c.upsertComment(ctx, ref, body, needed && !c.noComments); err != nil {
+		return err
 	}
 	c.setBlocking(ref, res.Blocking())
 	c.mu.Lock()

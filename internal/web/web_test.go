@@ -647,6 +647,40 @@ func (h *harness) sweeper(t *testing.T) (*check.Checker, *check.Queue, *reconcil
 	return checker, queue, reconcile.New(h.api, h.store, agreement, checker, queue, alerts, h.app.Limits, "rotki")
 }
 
+func TestNoCommentsKeepsEarlierCommentsCurrent(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	pr := check.Ref{Repo: "rotki", Number: 1}
+	quiet := func() *check.Checker {
+		return check.NewChecker(h.api, h.store, h.dir, check.Options{
+			Owner: "rotki", StatusContext: "license/cla", BaseURL: h.site.URL,
+			BotLogin:   func() string { return h.app.Slug() + "[bot]" },
+			NoComments: true,
+		})
+	}
+
+	if err := quiet().CheckPR(ctx, pr, check.Hint{}); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.Mu.Lock()
+	posted := len(h.gh.Comments)
+	// One left from before comments were turned off, now out of date.
+	h.gh.Comments = append(h.gh.Comments, fakegh.Comment{ID: 99, Repo: "rotki", Number: 1, Body: check.Marker + "\nstale", Login: h.gh.BotLogin})
+	h.gh.Mu.Unlock()
+	if posted != 0 {
+		t.Fatalf("posted %d comments with comments off", posted)
+	}
+
+	if err := quiet().CheckPR(ctx, pr, check.Hint{}); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.Mu.Lock()
+	defer h.gh.Mu.Unlock()
+	if len(h.gh.Comments) != 1 || !strings.Contains(h.gh.Comments[0].Body, "[newbie](https://github.com/newbie)") {
+		t.Fatalf("earlier comment not brought up to date: %+v", h.gh.Comments)
+	}
+}
+
 func TestSweepMakesNoRequestsWhenNothingChanged(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

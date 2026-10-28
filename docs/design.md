@@ -108,7 +108,10 @@ waited for the reset. Here:
   request itself was opened by a GitHub bot account (which GitHub authenticates). In a pull
   request opened by a person, a commit named `something[bot]` must be linked like any other.
   That holds for commits linked to a bot account too (renovate's are): GitHub links a commit
-  by its email, and anyone can use a bot's noreply address.
+  by its email, and anyone can use a bot's noreply address. Such a commit waits for a
+  maintainer, since a bot cannot sign: putting the bot's login (`pre-commit-ci[bot]`) on the
+  allowlist trusts its address the way a signature trusts a person's. A bot that only
+  committed a person's commit is skipped, so the unlinked author is asked to link their email.
 - **Commit attribution** comes from the commit email, as in cla-assistant: anyone can author a
   commit with someone else's public email, and GitHub then shows it as theirs. Review the commits
   of pull requests from unknown contributors as usual.

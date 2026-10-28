@@ -74,7 +74,7 @@ is a startup error, and a trailing newline in the file is ignored.
 | `GITHUB_ORG` | yes | | the organization the App is installed on |
 | `DATA_DIR` | | `/data` | the data directory; mount a volume here |
 | `AUDIT_ANCHOR_INTERVAL` | | `24h` | how often the audit head is logged as an anchor, when it moved |
-| `AUDIT_ANCHOR_DISCORD` | | `false` | `true` also posts each anchor to `DISCORD_WEBHOOK_URL` (required then); see [design.md](design.md) |
+| `AUDIT_ANCHOR_DISCORD` | | `false` | `true` also posts each anchor to `DISCORD_WEBHOOK_URL` (required then). Set this or `BACKUP_DIR` (with the archives shipped off the host), or the anchor never leaves the host and the service warns at startup; see [design.md](design.md) |
 | `BACKUP_DIR` | | | where verified archives are dropped for the backup job, e.g. `/backups`; empty turns backups off |
 | `BACKUP_INTERVAL` | | `24h` | at least `1h` |
 | `BACKUP_KEEP` | | `2` | archives kept in `BACKUP_DIR`; older ones are removed |
@@ -94,7 +94,7 @@ logged), with no redeploy. See [`examples/config.json`](../examples/config.json)
 | Key | Meaning |
 |---|---|
 | `cla_gist`, `cla_revision` | the CLA text: a public gist and the revision to show and record |
-| `allowlist` | logins that never need to sign |
+| `allowlist` | logins that never need to sign; a bot account (`pre-commit-ci[bot]`) here is trusted in pull requests people open too |
 | `exempt_team` | slug of a team whose members need not sign |
 | `excluded_repos` | repos that are never checked |
 | `site.name` | the name on the pages (default: the GitHub org name) |

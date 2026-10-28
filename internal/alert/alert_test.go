@@ -86,13 +86,17 @@ func TestKindsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestDetailCarriesOnlyRepoPRAndStatus(t *testing.T) {
+func TestDetailCarriesOnlyRepoPRCallAndStatus(t *testing.T) {
 	cases := map[string]Detail{
-		"":                      {},
-		"rotki#12":              {Repo: "rotki", PR: 12},
-		"rotki":                 {Repo: "rotki"},
-		"(GitHub 502)":          {Status: 502},
-		"rotki#12 (GitHub 404)": {Repo: "rotki", PR: 12, Status: 404},
+		"":                                {},
+		"rotki#12":                        {Repo: "rotki", PR: 12},
+		"rotki":                           {Repo: "rotki"},
+		"(GitHub 502 Bad Gateway)":        {Status: 502},
+		"rotki#12 (GitHub 404 Not Found)": {Repo: "rotki", PR: 12, Status: 404},
+		"(GitHub 599)":                    {Status: 599},
+		"ui-library#644 while setting the commit status (GitHub 403 Forbidden)": {
+			Repo: "ui-library", PR: 644, Call: "setting the commit status", Status: 403,
+		},
 	}
 	for want, d := range cases {
 		if got := d.String(); got != want {

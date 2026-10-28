@@ -114,10 +114,8 @@ func run() error {
 	queue := check.NewQueue(checker, alerts, app.Limits, 1000)
 	sweeper := reconcile.New(gh, st, agreement, checker, queue, alerts, app.Limits, cfg.Org)
 
-	hook := webhook.New(cfg.WebhookSecret, app.InstallationID, queue, alerts, func(repo string) {
-		if err := sweeper.SweepRepo(ctx, repo); err != nil {
-			slog.Error("sweeping a newly added repository failed", "repo", repo, "error", err)
-		}
+	hook := webhook.New(cfg.WebhookSecret, app.InstallationID, queue, alerts, func(added []string) {
+		sweeper.ReposChanged(ctx, added)
 	})
 
 	site, err := web.New(web.Deps{

@@ -701,9 +701,50 @@ func TestSweepMakesNoRequestsWhenNothingChanged(t *testing.T) {
 	h.gh.Mu.Lock()
 	calls := h.gh.Requests - before
 	h.gh.Mu.Unlock()
-	// The one search: the signatures are read from disk.
-	if calls != 1 {
+	// The installation's repositories and the one search: the signatures are
+	// read from disk.
+	if calls != 2 {
 		t.Fatalf("an idle sweep made %d requests", calls)
+	}
+}
+
+func TestSweepSkipsRepositoriesOutsideTheInstallation(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	// Found by the org-wide search, as any public repository's would be.
+	h.gh.PRs["other#7"] = fakegh.PR{Open: true, HeadSHA: "head7", Commits: []fakegh.Commit{
+		{AuthorName: "Other", AuthorID: 600, AuthorLogin: "other"},
+	}}
+	h.gh.Mu.Lock()
+	h.gh.Installed = []string{"rotki"}
+	h.gh.Mu.Unlock()
+
+	checker, queue, sweeper := h.sweeper(t)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go queue.Run(runCtx, 1)
+	sweeper.Sweep(ctx)
+
+	if !checker.Skipped("other") || checker.Skipped("rotki") || checker.Skipped("ROTKI") {
+		t.Fatal("skips the wrong repositories")
+	}
+	h.waitFor(t, "a status on rotki#1", func() bool {
+		for _, st := range h.gh.Statuses {
+			if st.Repo == "rotki" {
+				return true
+			}
+		}
+		return false
+	})
+	h.gh.Mu.Lock()
+	defer h.gh.Mu.Unlock()
+	for _, st := range h.gh.Statuses {
+		if st.Repo == "other" {
+			t.Fatalf("checked a repository outside the installation: %+v", st)
+		}
+	}
+	if n := h.gh.Paths["POST /repos/rotki/other/statuses/head7"]; n != 0 {
+		t.Fatalf("tried to set a status outside the installation %d times", n)
 	}
 }
 

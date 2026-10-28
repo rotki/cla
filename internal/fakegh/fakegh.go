@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -62,6 +63,9 @@ type Server struct {
 	Paths    map[string]int
 	// Revoked counts user tokens revoked through the OAuth app API.
 	Revoked int
+	// Installed lists the repositories the installation covers; nil means
+	// all of them. Like GitHub, statuses on any other repository get a 403.
+	Installed []string
 }
 
 func New() *Server {
@@ -149,6 +153,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprintf(w, "<p>%d chars of markdown</p>", len(body.Text))
+
+	case r.Method == http.MethodGet && p == "/installation/repositories":
+		selection, repos := "all", []map[string]string{}
+		if s.Installed != nil {
+			selection = "selected"
+			for _, name := range s.Installed {
+				repos = append(repos, map[string]string{"name": name})
+			}
+		}
+		writeJSON(w, 200, map[string]any{"total_count": len(repos), "repository_selection": selection, "repositories": repos})
+
+	case r.Method == http.MethodPost && strings.Contains(p, "/statuses/") && s.Installed != nil && !slices.Contains(s.Installed, parts[2]):
+		writeJSON(w, 403, map[string]string{"message": "Resource not accessible by integration"})
 
 	case r.Method == http.MethodPost && strings.Contains(p, "/statuses/"):
 		var body map[string]string

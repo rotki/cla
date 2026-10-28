@@ -35,22 +35,24 @@ type Handler struct {
 	installationID func() int64
 	queue          Queue
 	alerts         *alert.Notifier
-	sweepRepo      func(repo string)
+	reposChanged   func(added []string)
 
 	mu         sync.Mutex
 	deliveries map[string]bool
 	order      []string
 }
 
-// New returns the webhook handler. sweepRepo is called for repositories newly
-// added to the installation, so their open pull requests get checked.
-func New(secret []byte, installationID func() int64, queue Queue, alerts *alert.Notifier, sweepRepo func(repo string)) *Handler {
+// New returns the webhook handler. reposChanged is called when repositories
+// are added to or removed from the installation, with the added ones, so the
+// list of repositories to check is updated and their open pull requests get
+// checked.
+func New(secret []byte, installationID func() int64, queue Queue, alerts *alert.Notifier, reposChanged func(added []string)) *Handler {
 	return &Handler{
 		secret:         secret,
 		installationID: installationID,
 		queue:          queue,
 		alerts:         alerts,
-		sweepRepo:      sweepRepo,
+		reposChanged:   reposChanged,
 		deliveries:     map[string]bool{},
 	}
 }
@@ -152,18 +154,14 @@ func (h *Handler) dispatch(kind string, ev event) {
 			h.queue.Enqueue(check.Job{Ref: check.Ref{Repo: ev.Repository.Name}, MergeSHA: ev.MergeGroup.HeadSHA})
 		}
 	case "installation_repositories":
-		if ev.Action == "added" && h.sweepRepo != nil {
-			// One search at a time, as GitHub asks: adding many repos at
-			// once must not fire a burst of concurrent searches.
+		if (ev.Action == "added" || ev.Action == "removed") && h.reposChanged != nil {
 			names := make([]string, 0, len(ev.RepositoriesAdded))
 			for _, repo := range ev.RepositoriesAdded {
 				names = append(names, repo.Name)
 			}
-			go func() {
-				for _, name := range names {
-					h.sweepRepo(name)
-				}
-			}()
+			// The added ones are swept one after another, as GitHub asks:
+			// adding many repos at once must not fire a burst of searches.
+			go h.reposChanged(names)
 		}
 	case "ping":
 		slog.Info("webhook ping received")

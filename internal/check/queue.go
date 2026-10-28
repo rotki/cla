@@ -309,6 +309,7 @@ func (q *Queue) report(err error, job Job) {
 		q.mu.Unlock()
 		if failing == 0 {
 			q.alerts.Resolve(alert.CheckFailed)
+			q.alerts.Resolve(alert.NoAccess)
 		}
 		if limited == 0 {
 			q.alerts.Resolve(alert.RateLimited)
@@ -332,11 +333,18 @@ func (q *Queue) report(err error, job Job) {
 		q.retryAt(job, retryAt)
 		return
 	}
-	slog.Error("check failed", "pr", ref.String(), "error", err)
+	slog.Error("check failed", "pr", ref.String(), "call", githubapp.Call(err), "error", err)
 	q.mu.Lock()
 	q.failing[key] = true
 	q.mu.Unlock()
-	q.alerts.Report(alert.CheckFailed, alert.Detail{Repo: ref.Repo, PR: ref.Number, Status: githubapp.StatusOf(err)})
+	d := alert.Detail{Repo: ref.Repo, PR: ref.Number, Status: githubapp.StatusOf(err), Call: githubapp.Call(err)}
+	if githubapp.NoAccess(err) {
+		// Most often the App is not installed on the repository, or lost a
+		// permission: say so rather than leave a bare 403 to decode.
+		q.alerts.Report(alert.NoAccess, d)
+		return
+	}
+	q.alerts.Report(alert.CheckFailed, d)
 }
 
 func backoff(attempt int) time.Duration {

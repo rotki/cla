@@ -50,6 +50,60 @@ func IsStatus(err error, status int) bool {
 	return StatusOf(err) == status
 }
 
+// NoAccess reports whether GitHub refused or hid what was asked for: a 403
+// that is not a rate limit, a 404, or a GraphQL FORBIDDEN or NOT_FOUND. For
+// a repository that is what the App sees when it is not installed there or
+// lacks a permission. Rate limits never reach here as NoAccess: they come
+// back as a RateLimitError, which callers handle first.
+func NoAccess(err error) bool {
+	if _, limited := RetryAfter(err); limited {
+		return false
+	}
+	switch StatusOf(err) {
+	case http.StatusForbidden, http.StatusNotFound:
+		return true
+	}
+	var gqlErr *GraphQLError
+	if errors.As(err, &gqlErr) {
+		for _, t := range gqlErr.Types {
+			if t == "FORBIDDEN" || t == "NOT_FOUND" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Call names, in words, the GitHub request an error came from, for alerts.
+// It is one of a fixed set of phrases, never request data, so it carries no
+// personal data; "" when the request is not one of these.
+func Call(err error) string {
+	var gqlErr *GraphQLError
+	if errors.As(err, &gqlErr) {
+		return "reading from GitHub's GraphQL API"
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return ""
+	}
+	p := apiErr.Path
+	switch {
+	case strings.HasSuffix(p, "/access_tokens"):
+		return "getting an installation token"
+	case strings.HasPrefix(p, "/installation/repositories"):
+		return "listing the installation's repositories"
+	case strings.Contains(p, "/statuses/"):
+		return "setting the commit status"
+	case strings.Contains(p, "/comments"):
+		return "reading or writing the bot comment"
+	case strings.Contains(p, "/teams/"):
+		return "reading the exempt team"
+	case p == "/graphql":
+		return "reading from GitHub's GraphQL API"
+	}
+	return ""
+}
+
 type App struct {
 	id     int64
 	key    *rsa.PrivateKey
@@ -414,9 +468,11 @@ func nextLink(link, apiURL string) string {
 }
 
 // GraphQLError is returned when the GraphQL response carries errors. Like
-// APIError it keeps no message text.
+// APIError it keeps no message text, only GitHub's error types (NOT_FOUND,
+// FORBIDDEN and the like), a fixed vocabulary.
 type GraphQLError struct {
 	Count int
+	Types []string
 }
 
 func (e *GraphQLError) Error() string {
@@ -450,7 +506,11 @@ func (c *Client) GraphQL(ctx context.Context, query string, vars map[string]any,
 		}
 	}
 	if !limited {
-		return &GraphQLError{Count: len(resp.Errors)}
+		gqlErr := &GraphQLError{Count: len(resp.Errors)}
+		for _, e := range resp.Errors {
+			gqlErr.Types = append(gqlErr.Types, e.Type)
+		}
+		return gqlErr
 	}
 	retryAt, ok := retryTime(header, time.Now())
 	if !ok {

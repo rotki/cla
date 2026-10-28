@@ -134,3 +134,16 @@ func TestOversizedBodyIsRefusedBeforeVerification(t *testing.T) {
 		t.Fatal("queued work from an oversized body")
 	}
 }
+
+func TestPrivateRepositoriesAreIgnored(t *testing.T) {
+	h, q := newHandler()
+	pr := `{"action":"opened","installation":{"id":42},"repository":{"name":"internal","private":true},"pull_request":{"number":3}}`
+	merge := `{"action":"checks_requested","installation":{"id":42},"repository":{"name":"internal","private":true},"merge_group":{"head_sha":"abc"}}`
+	if code := deliver(h, "pull_request", "p1", pr, sign(pr)); code != http.StatusAccepted {
+		t.Fatalf("status %d", code)
+	}
+	deliver(h, "merge_group", "p2", merge, sign(merge))
+	if len(q.jobs) != 0 {
+		t.Fatalf("queued work for a private repository: %+v", q.jobs)
+	}
+}

@@ -144,7 +144,7 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 // SweepRepo queues the open pull requests of one repository, for one newly
 // added to the installation.
 func (s *Sweeper) SweepRepo(ctx context.Context, repo string) error {
-	_, _, err := s.sweep(ctx, fmt.Sprintf("repo:%s/%s is:pr is:open", s.owner, repo), false)
+	_, _, err := s.sweep(ctx, fmt.Sprintf("repo:%s/%s is:pr is:open is:public", s.owner, repo), false)
 	return err
 }
 
@@ -170,8 +170,10 @@ func (s *Sweeper) ReposChanged(ctx context.Context, added []string) {
 // request checked this long before a sweep may still be missing from it.
 const searchLag = 5 * time.Minute
 
+// orgQuery finds the open pull requests of the org's public repositories:
+// private ones are never checked (see check.Checker.Skipped).
 func (s *Sweeper) orgQuery() string {
-	return fmt.Sprintf("org:%s is:pr is:open archived:false", s.owner)
+	return fmt.Sprintf("org:%s is:pr is:open is:public archived:false", s.owner)
 }
 
 // RecheckAll is the manual re-check: it forgets what was checked before and

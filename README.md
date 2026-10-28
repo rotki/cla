@@ -10,7 +10,8 @@ footer name you instead of the defaults (rotki's source link and Rotki Solutions
 
 ## How it works
 
-- **Checks.** On every pull request the App collects the commit authors (the committer when the
+- **Checks.** On every pull request in a public repository (private ones are skipped, as with
+  cla-assistant) the App collects the commit authors (the committer when the
   author's email is not linked to an account), skips the allowlist and the exempt team, and
   sets the commit status `license/cla`. One bot comment per pull request lists who still needs to
   sign, linking their profiles without @mentions, and is edited in place (`PR_COMMENTS=false`

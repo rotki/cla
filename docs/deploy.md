@@ -44,6 +44,7 @@ here and below with the host the service runs on.
 | Organization permissions | Members: read |
 | Account permissions | Email addresses: read |
 | Events | Pull request · Merge group |
+| Logo | rotki's is [`examples/app-icon.png`](../examples/app-icon.png) (source: `app-icon.svg`); GitHub shows it at about 20 px next to the status |
 
 Install it on all repositories, or the ones that take outside contributions. The App cannot
 write to any repository's contents: signatures live on the server, not on GitHub.

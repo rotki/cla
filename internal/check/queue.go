@@ -308,8 +308,7 @@ func (q *Queue) report(err error, job Job) {
 		failing, limited := len(q.failing), len(q.limited)
 		q.mu.Unlock()
 		if failing == 0 {
-			q.alerts.Resolve(alert.CheckFailed)
-			q.alerts.Resolve(alert.NoAccess)
+			q.resolveChecks()
 		}
 		if limited == 0 {
 			q.alerts.Resolve(alert.RateLimited)
@@ -337,14 +336,73 @@ func (q *Queue) report(err error, job Job) {
 	q.mu.Lock()
 	q.failing[key] = true
 	q.mu.Unlock()
-	d := alert.Detail{Repo: ref.Repo, PR: ref.Number, Status: githubapp.StatusOf(err), Call: githubapp.Call(err)}
-	if githubapp.NoAccess(err) {
-		// Most often the App is not installed on the repository, or lost a
-		// permission: say so rather than leave a bare 403 to decode.
-		q.alerts.Report(alert.NoAccess, d)
+	// A check's only GraphQL request reads the pull request and its commits.
+	q.alerts.ReportError(alert.CheckFailed, err, alert.Detail{Repo: ref.Repo, PR: ref.Number}, "reading the pull request")
+}
+
+// resolveChecks announces recovery for every alert a failing check can
+// raise, once none is failing any more.
+func (q *Queue) resolveChecks() {
+	q.alerts.Resolve(alert.CheckFailed)
+	q.alerts.Resolve(alert.NoAccess)
+	q.alerts.Resolve(alert.NotInstalled)
+}
+
+// ForgetSkipped drops what the queue holds for repositories that are now
+// skipped, such as one removed from the installation. Nothing re-checks
+// them, so a failure recorded there would otherwise keep its alert open for
+// good. Called after each listing of the installation's repositories.
+func (q *Queue) ForgetSkipped() {
+	q.mu.Lock()
+	repos := map[string]bool{}
+	for _, keys := range []map[jobKey]bool{q.failing, q.limited} {
+		for key := range keys {
+			repos[key.ref.Repo] = true
+		}
+	}
+	for key := range q.attempts {
+		repos[key.ref.Repo] = true
+	}
+	q.mu.Unlock()
+
+	// Asked without holding q.mu: Skipped takes the checker's lock.
+	skipped := map[string]bool{}
+	for repo := range repos {
+		if q.checker.Skipped(repo) {
+			skipped[repo] = true
+		}
+	}
+	if len(skipped) == 0 {
 		return
 	}
-	q.alerts.Report(alert.CheckFailed, d)
+
+	q.mu.Lock()
+	for key, t := range q.scheduled {
+		if skipped[key.ref.Repo] {
+			t.Stop()
+			delete(q.scheduled, key)
+		}
+	}
+	for _, keys := range []map[jobKey]bool{q.failing, q.limited} {
+		for key := range keys {
+			if skipped[key.ref.Repo] {
+				delete(keys, key)
+			}
+		}
+	}
+	for key := range q.attempts {
+		if skipped[key.ref.Repo] {
+			delete(q.attempts, key)
+		}
+	}
+	failing, limited := len(q.failing), len(q.limited)
+	q.mu.Unlock()
+	if failing == 0 {
+		q.resolveChecks()
+	}
+	if limited == 0 {
+		q.alerts.Resolve(alert.RateLimited)
+	}
 }
 
 func backoff(attempt int) time.Duration {

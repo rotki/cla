@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rotki/cla/internal/githubapp"
 )
 
 func newTestNotifier() (*Notifier, *[]string, *time.Time) {
@@ -153,5 +155,29 @@ func TestStoppingSendsWhatIsQueued(t *testing.T) {
 	n.Run(ctx)
 	if len(sent) != 2 {
 		t.Fatalf("a stopping notifier sent %d of 2 queued alerts", len(sent))
+	}
+}
+
+func TestForError(t *testing.T) {
+	graphqlNotFound := &githubapp.GraphQLError{Count: 1, Types: []string{"NOT_FOUND"}}
+	cases := []struct {
+		name string
+		err  error
+		kind Kind
+		want string
+	}{
+		{"status refused", &githubapp.APIError{Path: "/repos/rotki/x/statuses/abc", Status: 403}, NoAccess,
+			"x#3 while setting the commit status (GitHub 403 Forbidden)"},
+		{"app uninstalled", &githubapp.APIError{Path: "/app/installations/1/access_tokens", Status: 404}, NotInstalled,
+			"x#3 while getting an installation token (GitHub 404 Not Found)"},
+		{"graphql named by the caller", graphqlNotFound, NoAccess, "x#3 while reading the pull request"},
+		{"other failure", &githubapp.APIError{Path: "/repos/rotki/x/statuses/abc", Status: 502}, CheckFailed,
+			"x#3 while setting the commit status (GitHub 502 Bad Gateway)"},
+	}
+	for _, tc := range cases {
+		kind, d := ForError(CheckFailed, tc.err, Detail{Repo: "x", PR: 3}, "reading the pull request")
+		if kind != tc.kind || d.String() != tc.want {
+			t.Errorf("%s: got %s %q, want %s %q", tc.name, kind, d, tc.kind, tc.want)
+		}
 	}
 }

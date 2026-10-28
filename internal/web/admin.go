@@ -121,7 +121,7 @@ func (s *Server) adminRecheck(w http.ResponseWriter, r *http.Request) {
 		queued, err := s.Rechecker.RecheckAll(ctx)
 		if err != nil {
 			slog.Error("manual re-check failed", "error", err)
-			s.Alerts.Report(alert.ReconcileError, alert.Detail{Status: githubapp.StatusOf(err)})
+			s.Alerts.ReportError(alert.ReconcileError, err, alert.Detail{}, "searching for open pull requests")
 			return
 		}
 		slog.Info("manual re-check queued", "pull_requests", queued)

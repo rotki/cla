@@ -19,6 +19,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/rotki/cla/internal/githubapp"
 )
 
 type Kind string
@@ -34,6 +36,7 @@ const (
 	BackupProblems Kind = "backup_unverified"
 	AuditBroken    Kind = "audit_broken"
 	NoAccess       Kind = "no_access"
+	NotInstalled   Kind = "not_installed"
 )
 
 var titles = map[Kind]string{
@@ -47,6 +50,32 @@ var titles = map[Kind]string{
 	BackupProblems: "Backup written, but the data failed verification: run cla-tool verify",
 	AuditBroken:    "The audit log chain is broken, no anchor published: run cla-tool verify",
 	NoAccess:       "The App has no access to a repository it was asked to check: it is not installed there, or a permission is missing. Check the App's installation and permissions",
+	NotInstalled:   "GitHub refused the App an installation token: it was uninstalled from the organization or the installation is suspended. Nothing can be checked until it is installed again",
+}
+
+// ForError picks the alert for a GitHub error and fills d with what it may
+// say about it: the request in words and the status. The App missing from
+// the organization and no access to a repository get their own alerts;
+// anything else is reported as fallback. graphql names the caller's GraphQL
+// request, which the error itself cannot tell apart from any other.
+func ForError(fallback Kind, err error, d Detail, graphql string) (Kind, Detail) {
+	d.Status = githubapp.StatusOf(err)
+	d.Call = githubapp.Call(err)
+	if d.Call == githubapp.CallGraphQL && graphql != "" {
+		d.Call = graphql
+	}
+	switch {
+	case githubapp.NotInstalled(err):
+		return NotInstalled, d
+	case githubapp.NoAccess(err):
+		return NoAccess, d
+	}
+	return fallback, d
+}
+
+// ReportError reports a GitHub error as ForError classifies it.
+func (n *Notifier) ReportError(fallback Kind, err error, d Detail, graphql string) {
+	n.Report(ForError(fallback, err, d, graphql))
 }
 
 // Detail is everything a message may carry. Keep it free of personal data.

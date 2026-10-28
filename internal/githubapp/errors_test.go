@@ -29,6 +29,20 @@ func TestNoAccess(t *testing.T) {
 	}
 }
 
+func TestNotInstalled(t *testing.T) {
+	token := "/app/installations/1/access_tokens"
+	if !NotInstalled(&APIError{Path: token, Status: 404}) || !NotInstalled(&APIError{Path: token, Status: 403}) {
+		t.Fatal("a refused installation token is not a missing installation")
+	}
+	if NotInstalled(&APIError{Path: token, Status: 500}) || NotInstalled(&APIError{Path: "/repos/rotki/x/statuses/abc", Status: 404}) {
+		t.Fatal("other failures read as a missing installation")
+	}
+	// The whole installation missing is not one repository's access.
+	if NoAccess(&APIError{Path: token, Status: 404}) {
+		t.Fatal("a missing installation reads as no access to a repository")
+	}
+}
+
 func TestCall(t *testing.T) {
 	cases := map[string]error{
 		"setting the commit status":               &APIError{Path: "/repos/rotki/x/statuses/abc"},

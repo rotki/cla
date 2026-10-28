@@ -56,7 +56,7 @@ func IsStatus(err error, status int) bool {
 // lacks a permission. Rate limits never reach here as NoAccess: they come
 // back as a RateLimitError, which callers handle first.
 func NoAccess(err error) bool {
-	if _, limited := RetryAfter(err); limited {
+	if _, limited := RetryAfter(err); limited || NotInstalled(err) {
 		return false
 	}
 	switch StatusOf(err) {
@@ -74,13 +74,28 @@ func NoAccess(err error) bool {
 	return false
 }
 
+// NotInstalled reports whether GitHub refused an installation token: the
+// App was uninstalled from the organization or the installation suspended,
+// so nothing at all can be checked, whichever repository asked.
+func NotInstalled(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !strings.HasSuffix(apiErr.Path, "/access_tokens") {
+		return false
+	}
+	return apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusForbidden
+}
+
+// CallGraphQL is what Call says for any GraphQL request; the error cannot
+// tell which query it was, so callers that know replace it.
+const CallGraphQL = "reading from GitHub's GraphQL API"
+
 // Call names, in words, the GitHub request an error came from, for alerts.
 // It is one of a fixed set of phrases, never request data, so it carries no
 // personal data; "" when the request is not one of these.
 func Call(err error) string {
 	var gqlErr *GraphQLError
 	if errors.As(err, &gqlErr) {
-		return "reading from GitHub's GraphQL API"
+		return CallGraphQL
 	}
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -99,7 +114,7 @@ func Call(err error) string {
 	case strings.Contains(p, "/teams/"):
 		return "reading the exempt team"
 	case p == "/graphql":
-		return "reading from GitHub's GraphQL API"
+		return CallGraphQL
 	}
 	return ""
 }

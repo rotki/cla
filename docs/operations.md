@@ -85,6 +85,7 @@ name, for example `rotki#12 while setting the commit status (GitHub 502 Bad Gate
 
 | Alert | When |
 |---|---|
+| GitHub refused the App an installation token | the App was uninstalled from the organization or the installation is suspended; nothing can be checked |
 | The App has no access to a repository | GitHub answered 403 or 404 for a repository: the App is not installed there, or a permission is missing |
 | CLA check failed | a pull request could not be checked or its status not posted, for any other reason |
 | GitHub rate limit reached | a check or sweep hit a limit and was deferred |
@@ -96,9 +97,11 @@ name, for example `rotki#12 while setting the commit status (GitHub 502 Bad Gate
 | The audit log chain is broken | the anchor check found the chain broken or the last published head missing |
 
 Each problem sends one message at once; repeats within the hour are counted and summarised
-once the hour is over, and a **Recovered** message follows when it clears. Two alerts clear
-only once everything they covered recovered: a check failure when no pull request is still
-failing, a rate limit when nothing is still waiting on one.
+once the hour is over, and a **Recovered** message follows when it clears. Some alerts clear
+only once everything they covered recovered: a check failure, no access or a refused token
+when no pull request is still failing, a rate limit when nothing is still waiting on one. A
+pull request in a repository that leaves the installation (or `excluded_repos`) stops counting
+at the next listing of the installation's repositories, since nothing re-checks it.
 
 The audit anchor (`AUDIT_ANCHOR_INTERVAL`, default daily, only when the head moved) is an
 `audit anchor` line in the log with the head's sequence number and hash, nothing else. With

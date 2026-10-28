@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rotki/cla/internal/alert"
@@ -58,6 +59,10 @@ type Sweeper struct {
 	alerts    *alert.Notifier
 	limits    *githubapp.Limits
 	owner     string
+
+	// reposMu serialises ReposChanged: each webhook delivery about the
+	// installation's repositories calls it from its own goroutine.
+	reposMu sync.Mutex
 }
 
 func New(gh *githubapp.Client, st *store.Store, agreement *store.Agreement, checker *check.Checker, queue *check.Queue, alerts *alert.Notifier, limits *githubapp.Limits, owner string) *Sweeper {
@@ -119,6 +124,8 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 		}
 		// The sweep goes on with the repositories as last listed.
 		slog.Warn("listing the installation's repositories failed", "error", err)
+	} else {
+		s.queue.ForgetSkipped()
 	}
 
 	open, complete, err := s.sweep(ctx, s.orgQuery(), false)
@@ -130,6 +137,8 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 		s.checker.Prune(open, start.Add(-searchLag))
 	}
 	s.alerts.Resolve(alert.ReconcileError)
+	// The search needed an installation token, so the App is installed.
+	s.alerts.Resolve(alert.NotInstalled)
 }
 
 // SweepRepo queues the open pull requests of one repository, for one newly
@@ -143,8 +152,12 @@ func (s *Sweeper) SweepRepo(ctx context.Context, repo string) error {
 // installation: it lists them again, so removed ones are skipped from now on,
 // then queues the open pull requests of each added one.
 func (s *Sweeper) ReposChanged(ctx context.Context, added []string) {
+	s.reposMu.Lock()
+	defer s.reposMu.Unlock()
 	if err := s.checker.RefreshRepos(ctx); err != nil {
 		slog.Warn("listing the installation's repositories failed", "error", err)
+	} else {
+		s.queue.ForgetSkipped()
 	}
 	for _, repo := range added {
 		if err := s.SweepRepo(ctx, repo); err != nil {
@@ -278,6 +291,7 @@ func (s *Sweeper) fail(ctx context.Context, err error, repo string) {
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || s.limited(err) {
 		return
 	}
-	slog.Error("reconcile sweep failed", "repo", repo, "error", err)
-	s.alerts.Report(alert.ReconcileError, alert.Detail{Repo: repo, Status: githubapp.StatusOf(err)})
+	slog.Error("reconcile sweep failed", "repo", repo, "call", githubapp.Call(err), "error", err)
+	// The sweep's GraphQL request is the search for open pull requests.
+	s.alerts.ReportError(alert.ReconcileError, err, alert.Detail{Repo: repo}, "searching for open pull requests")
 }

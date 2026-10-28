@@ -40,10 +40,10 @@ here and below with the host the service runs on.
 | Callback URL | `https://cla.example.org/oauth/callback` |
 | Request user authorization during installation | off |
 | Webhook URL | `https://cla.example.org/webhook`, with a secret |
-| Repository permissions | Commit statuses: read & write · Pull requests: read & write · Contents: read · Metadata: read |
+| Repository permissions | Commit statuses: read & write · Pull requests: read & write · Contents: read · Merge queues: read · Metadata: read |
 | Organization permissions | Members: read |
 | Account permissions | Email addresses: read |
-| Events | Pull request · Merge group |
+| Events | Pull request · Merge group (GitHub offers it only with Merge queues: read) |
 | Logo | rotki's is [`examples/app-icon.png`](../examples/app-icon.png) (source: `app-icon.svg`); GitHub shows it at about 20 px next to the status |
 
 Install it on all repositories, or the ones that take outside contributions. The App cannot

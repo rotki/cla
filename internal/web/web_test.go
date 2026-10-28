@@ -932,7 +932,7 @@ func TestPagesOfferSigningOnlyToWhoStillNeedsTo(t *testing.T) {
 	h.login(t, "/")
 	for _, path := range []string{"/", "/cla"} {
 		_, body := h.get(t, path)
-		if strings.Contains(body, "Read and sign the agreement") || strings.Contains(body, "Sign the agreement</a>") || !strings.Contains(body, "You have signed the agreement") {
+		if strings.Contains(body, "Read and sign the agreement") || strings.Contains(body, "Sign the agreement</a>") || !strings.Contains(body, `<p class="covered ok" role="status">`) || !strings.Contains(body, "You have signed.") {
 			t.Fatalf("a signer is offered to sign on %s:\n%s", path, body)
 		}
 	}

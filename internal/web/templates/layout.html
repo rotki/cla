@@ -38,9 +38,9 @@
 </html>{{end}}
 
 {{define "covered"}}
-{{if .Pending}}<p class="notice">Your employer signature is waiting for an admin to confirm it. There is nothing else to do.</p>
-{{else if .Grandfathered}}<p class="notice">You have contributed before, so you are already covered and there is nothing to sign.</p>
-{{else if .Signed}}<p class="notice">You have signed the agreement. There is nothing else to do.</p>
+{{if .Pending}}<p class="covered" role="status"><span class="covered-icon" aria-hidden="true">…</span><span><strong>Waiting for confirmation.</strong> Your employer signature is waiting for an admin to confirm it. There is nothing else to do.</span></p>
+{{else if .Grandfathered}}<p class="covered ok" role="status"><span class="covered-icon" aria-hidden="true">✓</span><span><strong>You are covered.</strong> You have contributed before, so there is nothing to sign.</span></p>
+{{else if .Signed}}<p class="covered ok" role="status"><span class="covered-icon" aria-hidden="true">✓</span><span><strong>You have signed.</strong> Your signature is on file; there is nothing else to do.</span></p>
 {{end}}
 {{end}}
 

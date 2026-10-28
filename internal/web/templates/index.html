@@ -2,6 +2,7 @@
 <section class="card">
   <p class="eyebrow">Contributing to {{.Site.Name}}</p>
   <h1>Contributor License Agreement</h1>
+  {{with .Data.Standing}}{{if .Covered}}{{template "covered" .}}{{end}}{{end}}
   <p class="lead">
     Before we can merge a contribution to a {{.Site.Name}} repository, every commit author signs
     our Contributor License Agreement once. You keep the copyright to your work; the agreement lets
@@ -11,7 +12,6 @@
     When you open a pull request, a bot comments with a signing link if you still need to sign.
     Signing takes about a minute.
   </p>
-  {{with .Data.Standing}}{{if .Covered}}{{template "covered" .}}{{end}}{{end}}
   {{if not (and .Data.Standing .Data.Standing.Covered)}}
   <div class="actions">
     <a class="button" href="/sign">Read and sign the agreement</a>

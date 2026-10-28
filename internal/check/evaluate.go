@@ -5,7 +5,8 @@
 // the committer when the author's email is not linked to a GitHub account;
 // the allowlist and the exempt team need not sign; Co-authored-by trailers
 // are ignored; a commit with no linked account at all fails. Bot commits are
-// exempt only in pull requests a bot account opened.
+// exempt in pull requests a bot account opened; elsewhere only a bot account
+// on the allowlist is.
 package check
 
 import (
@@ -34,15 +35,19 @@ type Result struct {
 	Pending  []Author
 	Unsigned []Author
 	Unlinked []Author
+	// Bots are bot accounts with commits in a pull request a person opened.
+	// They cannot sign, so a maintainer decides: allowlist the bot, or have
+	// the commits rewritten.
+	Bots []Author
 }
 
 func (r Result) Total() int {
-	return len(r.Signed) + len(r.Pending) + len(r.Unsigned) + len(r.Unlinked)
+	return len(r.Signed) + len(r.Pending) + len(r.Unsigned) + len(r.Unlinked) + len(r.Bots)
 }
 
 // OK reports whether the pull request may be merged.
 func (r Result) OK() bool {
-	return len(r.Pending) == 0 && len(r.Unsigned) == 0 && len(r.Unlinked) == 0
+	return len(r.Pending) == 0 && len(r.Unsigned) == 0 && len(r.Unlinked) == 0 && len(r.Bots) == 0
 }
 
 // Blocking returns the account IDs whose signature would change the result.
@@ -63,7 +68,8 @@ type Rules struct {
 	ExemptTeam map[string]bool
 	// BotPR exempts commits that claim to be a bot's. It is only set for a
 	// pull request opened by a bot account: in one opened by a person, such
-	// a commit could be anyone's, so it has to be linked like any other.
+	// a commit could be anyone's, so it has to be linked like any other, and
+	// a linked bot account is exempt only when it is on the allowlist.
 	BotPR bool
 }
 
@@ -77,10 +83,12 @@ func NewRules(allowlist []string, team map[string]bool, botPR bool) Rules {
 }
 
 func (r Rules) exempt(a Author) bool {
-	if a.Bot {
-		return r.BotPR
-	}
 	login := strings.ToLower(a.Login)
+	if a.Bot {
+		// Allowlisting a bot trusts its noreply address the way a signature
+		// trusts a person's email: a commit links to whoever's it names.
+		return r.BotPR || (login != "" && r.Allowlist[login])
+	}
 	return login != "" && (r.Allowlist[login] || r.ExemptTeam[login])
 }
 
@@ -93,6 +101,10 @@ func Evaluate(authors []Author, rules Rules, standing func(int64) store.Standing
 		}
 		if !a.Linked() {
 			res.Unlinked = append(res.Unlinked, a)
+			continue
+		}
+		if a.Bot {
+			res.Bots = append(res.Bots, a)
 			continue
 		}
 		switch standing(a.ID) {

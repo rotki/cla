@@ -26,6 +26,7 @@ type Config struct {
 	Org           string
 	DataDir       string
 	StatusContext string
+	Comments      bool
 
 	AppID             int64
 	AppPrivateKey     *rsa.PrivateKey
@@ -38,6 +39,7 @@ type Config struct {
 	DiscordWebhookURL string
 	ReconcileInterval time.Duration
 	AnchorInterval    time.Duration
+	AnchorDiscord     bool
 	BackupDir         string
 	BackupInterval    time.Duration
 	BackupKeep        int
@@ -140,6 +142,20 @@ func Load() (*Config, error) {
 	cfg.AnchorInterval, err = time.ParseDuration(envOr("AUDIT_ANCHOR_INTERVAL", "24h"))
 	if err != nil || cfg.AnchorInterval < time.Minute {
 		return nil, errors.New("AUDIT_ANCHOR_INTERVAL must be a duration of at least 1m")
+	}
+	cfg.Comments, err = strconv.ParseBool(envOr("PR_COMMENTS", "true"))
+	if err != nil {
+		return nil, errors.New("PR_COMMENTS must be true or false")
+	}
+
+	// Anchors always go to the log; posting them to Discord as well is opt-in,
+	// since an active log means a message a day in the alert channel.
+	cfg.AnchorDiscord, err = strconv.ParseBool(envOr("AUDIT_ANCHOR_DISCORD", "false"))
+	if err != nil {
+		return nil, errors.New("AUDIT_ANCHOR_DISCORD must be true or false")
+	}
+	if cfg.AnchorDiscord && cfg.DiscordWebhookURL == "" {
+		return nil, errors.New("AUDIT_ANCHOR_DISCORD needs DISCORD_WEBHOOK_URL (or _FILE)")
 	}
 
 	cfg.BackupInterval, err = time.ParseDuration(envOr("BACKUP_INTERVAL", "24h"))

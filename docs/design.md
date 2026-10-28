@@ -55,11 +55,12 @@ hash of the line before it.
   signed. An account's events are dated to the day only, since a signing re-checks a public pull
   request at once and an exact time would match it.
 - **Anchored outside the server.** Someone with root on the host could rebuild the whole chain.
-  So at start and every `AUDIT_ANCHOR_INTERVAL` (24 h) the service posts the newest sequence
-  number and hash to the Discord alert channel when it moved. It checks the whole chain first
-  and alerts instead when it is broken, and a head counts as published only once Discord
-  accepted it; a failed post is retried after 15 minutes. Without `DISCORD_WEBHOOK_URL`,
-  anchors only reach the service's own log and it warns at startup. Each backup manifest's
+  So at start and every `AUDIT_ANCHOR_INTERVAL` (24 h) the service logs the newest sequence
+  number and hash when it moved. It checks the whole chain first and alerts instead when it is
+  broken. The log stays on the host, so with `AUDIT_ANCHOR_DISCORD=true` the anchor is also
+  posted to the Discord alert channel; it then counts as published only once Discord accepted
+  it, and a failed post is retried after 15 minutes. That is off by default, since an active
+  log means a message a day. Each backup manifest's
   `head`, shipped off the host daily, is a second anchor. `cla-tool verify -anchor
   <seq>:<hash>` checks the log against any of them; a rewritten log fails it. The service
   itself also checks, before each anchor, that the log still holds the head it last published
@@ -106,6 +107,11 @@ waited for the reset. Here:
 - **Bots.** A git name or email is free text, so a commit only counts as a bot's when the pull
   request itself was opened by a GitHub bot account (which GitHub authenticates). In a pull
   request opened by a person, a commit named `something[bot]` must be linked like any other.
+  That holds for commits linked to a bot account too (renovate's are): GitHub links a commit
+  by its email, and anyone can use a bot's noreply address. Such a commit waits for a
+  maintainer, since a bot cannot sign: putting the bot's login (`pre-commit-ci[bot]`) on the
+  allowlist trusts its address the way a signature trusts a person's. A bot that only
+  committed a person's commit is skipped, so the unlinked author is asked to link their email.
 - **Commit attribution** comes from the commit email, as in cla-assistant: anyone can author a
   commit with someone else's public email, and GitHub then shows it as theirs. Review the commits
   of pull requests from unknown contributors as usual.

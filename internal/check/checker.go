@@ -25,13 +25,14 @@ func (r Ref) String() string {
 }
 
 type Checker struct {
-	gh       *githubapp.Client
-	store    *store.Store
-	dir      *org.Directory
-	owner    string
-	context  string
-	baseURL  string
-	botLogin func() string
+	gh         *githubapp.Client
+	store      *store.Store
+	dir        *org.Directory
+	owner      string
+	context    string
+	baseURL    string
+	botLogin   func() string
+	noComments bool
 
 	mu       sync.Mutex
 	blocked  map[int64]map[Ref]bool
@@ -72,21 +73,26 @@ type Options struct {
 	BaseURL       string
 	// BotLogin returns "<app slug>[bot]", the author of our comments.
 	BotLogin func() string
+	// NoComments posts no new sticky comment, so only the status reports: for
+	// a shadow run next to another CLA tool, whose own comment already asks
+	// people to sign. Comments already there are still kept up to date.
+	NoComments bool
 }
 
 func NewChecker(gh *githubapp.Client, st *store.Store, dir *org.Directory, opts Options) *Checker {
 	return &Checker{
-		gh:       gh,
-		store:    st,
-		dir:      dir,
-		owner:    opts.Owner,
-		context:  opts.StatusContext,
-		baseURL:  opts.BaseURL,
-		botLogin: opts.BotLogin,
-		blocked:  map[int64]map[Ref]bool{},
-		blocks:   map[Ref][]int64{},
-		comments: map[Ref]comment{},
-		last:     map[Ref]lastCheck{},
+		gh:         gh,
+		store:      st,
+		dir:        dir,
+		owner:      opts.Owner,
+		context:    opts.StatusContext,
+		baseURL:    opts.BaseURL,
+		botLogin:   opts.BotLogin,
+		noComments: opts.NoComments,
+		blocked:    map[int64]map[Ref]bool{},
+		blocks:     map[Ref][]int64{},
+		comments:   map[Ref]comment{},
+		last:       map[Ref]lastCheck{},
 	}
 }
 
@@ -221,8 +227,11 @@ func (c *Checker) CheckPR(ctx context.Context, ref Ref, hint Hint) error {
 		c.last[ref] = lastCheck{headSHA: pr.HeadSHA, status: status, at: time.Now()}
 		c.mu.Unlock()
 	}
+	// With comments off, a comment from before is still kept up to date, so
+	// it never asks someone to sign after they did; only new ones are not
+	// posted.
 	body, needed := Comment(res, signURL, c.baseURL+"/cla")
-	if err := c.upsertComment(ctx, ref, body, needed); err != nil {
+	if err := c.upsertComment(ctx, ref, body, needed && !c.noComments); err != nil {
 		return err
 	}
 	c.setBlocking(ref, res.Blocking())

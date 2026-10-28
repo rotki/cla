@@ -59,11 +59,13 @@ Delete the export afterwards; it holds names and emails in plain text.
 
 Replacing another CLA tool without a gap:
 
-1. Install the App on one or a few repositories and run with `STATUS_CONTEXT=license/cla-next`
-   next to the old tool, so both report and nothing is required yet. Compare the two on real
-   pull requests for a while.
-2. Take a final export from the old tool and import it.
-3. Switch to `STATUS_CONTEXT=license/cla`, install the App on every repository, make the
+1. Seed the earlier contributors and import the old tool's signatures first (above): installed
+   on an empty data directory, the App finds every author of every open pull request unsigned.
+2. Install the App on one or a few repositories and run with `STATUS_CONTEXT=license/cla-next`
+   and `PR_COMMENTS=false` next to the old tool, so both report, nothing is required yet, and
+   only the old tool comments. Compare the two statuses on real pull requests for a while.
+3. Take a final export from the old tool and import it.
+4. Switch to `STATUS_CONTEXT=license/cla` and `PR_COMMENTS=true`, install the App on every repository, make the
    status required in branch protection (see [Security model](design.md#security-model)), then remove the old tool's
    webhook and link.
 
@@ -96,8 +98,9 @@ once the hour is over, and a **Recovered** message follows when it clears. Two a
 only once everything they covered recovered: a check failure when no pull request is still
 failing, a rate limit when nothing is still waiting on one.
 
-Discord also gets the audit anchor (`AUDIT_ANCHOR_INTERVAL`, default daily, only when the head
-moved): the head's sequence number and hash, nothing else.
+The audit anchor (`AUDIT_ANCHOR_INTERVAL`, default daily, only when the head moved) is an
+`audit anchor` line in the log with the head's sequence number and hash, nothing else. With
+`AUDIT_ANCHOR_DISCORD=true` it is posted to Discord as well.
 
 ## Maintenance
 
@@ -115,7 +118,7 @@ belongs on the host or an admin's machine, never in the container.
   It checks that every record parses, matches its file name and has the fields the service
   relies on, that `config.json` and `grandfathered.json` are sound, that the audit log is an
   unbroken chain matching every file, and, given the private key, that every record decrypts.
-  With an anchor from the Discord channel it also checks that the log was not rebuilt since. It
+  With an anchor (from a backup manifest kept off the host, or the Discord channel) it also checks that the log was not rebuilt since. It
   prints counts and problems, never names or emails. Run it after an import, after a rotation,
   and in the yearly restore test.
 - **Records are never deleted.** The CLA grants a perpetual, irrevocable license, and a record

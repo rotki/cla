@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,8 +81,62 @@ func TestAnchorPublishesTheVerifiedHead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go alerts.Run(ctx)
-	go anchor(ctx, st, alerts, time.Hour, "")
+	go anchor(ctx, st, alerts, time.Hour, true, "")
 	d.waitFor(t, "Audit log anchor** seq 1 `"+st.Head()+"`")
+}
+
+// syncBuffer is a log destination the anchor goroutine writes to while the
+// test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestAnchorOnlyLogsUnlessPosting(t *testing.T) {
+	logs := &syncBuffer{}
+	// SetDefault also points the log package at the new handler, and setting
+	// the old default back does not undo that, so restore it by hand.
+	prev, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+
+	st := dataDir(t)
+	d := &discord{}
+	alerts := alert.New(d.serve(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go alerts.Run(ctx)
+	go anchor(ctx, st, alerts, time.Hour, false, "")
+
+	want := `msg="audit anchor" seq=1 hash=` + st.Head()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no %q in the log:\n%s", want, logs)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.messages) != 0 {
+		t.Fatalf("posted to Discord: %q", d.messages)
+	}
 }
 
 func TestAnchorRefusesABrokenChain(t *testing.T) {
@@ -95,7 +151,7 @@ func TestAnchorRefusesABrokenChain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go alerts.Run(ctx)
-	go anchor(ctx, st, alerts, time.Hour, "")
+	go anchor(ctx, st, alerts, time.Hour, true, "")
 	d.waitFor(t, "audit log chain is broken")
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -183,7 +239,7 @@ func TestAnchorNoticesALogCutBackSinceTheLastBackup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go alerts.Run(ctx)
-	go anchor(ctx, st, alerts, time.Hour, backups)
+	go anchor(ctx, st, alerts, time.Hour, true, backups)
 	d.waitFor(t, "audit log chain is broken")
 	d.mu.Lock()
 	defer d.mu.Unlock()

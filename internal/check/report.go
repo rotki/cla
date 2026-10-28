@@ -26,7 +26,9 @@ func StatusFor(r Result) Status {
 		return Status{"success", "No commit authors need to sign the CLA."}
 	case r.OK():
 		return Status{"success", "All commit authors have signed the CLA."}
-	case len(r.Unsigned) == 0 && len(r.Unlinked) == 0:
+	case len(r.Unsigned) == 0 && len(r.Unlinked) == 0 && len(r.Pending) == 0:
+		return Status{"pending", "A bot account's commits need a maintainer to allow the bot."}
+	case len(r.Unsigned) == 0 && len(r.Unlinked) == 0 && len(r.Bots) == 0:
 		return Status{"pending", "Waiting for an employer signature to be confirmed."}
 	}
 	return Status{"pending", fmt.Sprintf("%d of %d commit authors have signed the CLA.", len(r.Signed), total)}
@@ -59,13 +61,16 @@ func Comment(r Result, signURL, claURL string) (body string, needed bool) {
 	// the comment past GitHub's 65,536 character limit.
 	lines := make([]string, 0, r.Total())
 	for _, a := range r.Unsigned {
-		lines = append(lines, "- [ ] @"+a.Login)
+		lines = append(lines, "- [ ] "+profile(a.Login))
 	}
 	for _, a := range r.Pending {
-		lines = append(lines, "- [ ] @"+a.Login+" (employer signature waiting for an admin to confirm it)")
+		lines = append(lines, "- [ ] "+profile(a.Login)+" (employer signature waiting for an admin to confirm it)")
+	}
+	for _, a := range r.Bots {
+		lines = append(lines, "- [ ] "+profile(a.Login)+" (a bot account, which cannot sign: a maintainer can add it to the allowlist)")
 	}
 	for _, a := range r.Signed {
-		lines = append(lines, "- [x] @"+a.Login)
+		lines = append(lines, "- [x] "+profile(a.Login))
 	}
 	lines, more := capped(lines, maxListed)
 	for _, line := range lines {
@@ -103,6 +108,19 @@ func capped(items []string, limit int) (shown []string, more int) {
 		return items, 0
 	}
 	return items[:limit], len(items) - limit
+}
+
+// profile names an account by a link to its profile rather than an
+// @mention, so the comment notifies nobody, as with cla-assistant: authors
+// already hear about their pull request, and the comment is rewritten on
+// every push. Logins are letters, digits and hyphens (plus "[bot]" for an
+// App), so they need no escaping. An App's page is /apps/<slug>, its login
+// without the suffix.
+func profile(login string) string {
+	if slug, ok := strings.CutSuffix(login, "[bot]"); ok {
+		return "[" + login + "](https://github.com/apps/" + slug + ")"
+	}
+	return "[" + login + "](https://github.com/" + login + ")"
 }
 
 // codeSpan shows a git author name, which anyone can set to anything, as

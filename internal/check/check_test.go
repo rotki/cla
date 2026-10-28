@@ -58,6 +58,19 @@ func TestAuthorOf(t *testing.T) {
 			author: gitActor{Name: "alice[bot]", Email: "alice@example.com", User: user(7, "alice")},
 			want:   Author{ID: 7, Login: "alice"},
 		},
+		{
+			// How renovate's commits arrive: linked to its App account.
+			name:   "linked to a bot account",
+			author: gitActor{Name: "renovate[bot]", Email: "29139614+renovate[bot]@users.noreply.github.com", User: user(29139614, "renovate[bot]")},
+			want:   Author{ID: 29139614, Login: "renovate[bot]", Bot: true},
+		},
+		{
+			// The commit is the person's; a bot only committed it.
+			name:      "a bot committer is not a fallback",
+			author:    gitActor{Name: "A", Email: "a@laptop.local"},
+			committer: gitActor{Name: "x", User: user(9, "pre-commit-ci[bot]")},
+			want:      Author{Name: "A"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -114,6 +127,28 @@ func TestBotCommitsNeedABotOpener(t *testing.T) {
 	if res := Evaluate(bot, NewRules(nil, nil, false), none); res.OK() || len(res.Unlinked) != 1 {
 		t.Fatalf("human PR: %+v", res)
 	}
+
+	// Commits linked to an App account, as renovate's are. Linking goes by
+	// email, which anyone can set, so the same rule holds.
+	linked := []Author{{ID: 29139614, Login: "renovate[bot]", Bot: true}}
+	if res := Evaluate(linked, NewRules(nil, nil, true), none); !res.OK() || res.Total() != 0 {
+		t.Fatalf("bot PR, linked bot: %+v", res)
+	}
+	// In a person's pull request it waits for a maintainer, not a signature.
+	res := Evaluate(linked, NewRules(nil, nil, false), none)
+	if res.OK() || len(res.Bots) != 1 || len(res.Unsigned) != 0 || len(res.Blocking()) != 0 {
+		t.Fatalf("human PR, linked bot: %+v", res)
+	}
+	if s := StatusFor(res); s.State != "pending" || !strings.Contains(s.Description, "maintainer") {
+		t.Fatalf("status %+v", s)
+	}
+	// An allowlisted bot account passes there too; a name alone does not.
+	if res := Evaluate(linked, NewRules([]string{"Renovate[bot]"}, nil, false), none); !res.OK() {
+		t.Fatalf("human PR, allowlisted bot: %+v", res)
+	}
+	if res := Evaluate(bot, NewRules([]string{"renovate[bot]"}, nil, false), none); res.OK() {
+		t.Fatalf("human PR, unlinked bot name on the allowlist: %+v", res)
+	}
 }
 
 func TestStatusFor(t *testing.T) {
@@ -151,10 +186,18 @@ func TestComment(t *testing.T) {
 	if !needed || !strings.HasPrefix(body, Marker) {
 		t.Fatalf("needed=%v body=%q", needed, body)
 	}
-	for _, want := range []string{"- [x] @alice", "- [ ] @bob", "@carol (employer", "**1** of **4**", "(https://cla.rotki.com/sign?x)"} {
+	for _, want := range []string{"- [x] [alice](https://github.com/alice)", "- [ ] [bob](https://github.com/bob)", "[carol](https://github.com/carol) (employer", "**1** of **4**", "(https://cla.rotki.com/sign?x)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("comment lacks %q:\n%s", want, body)
 		}
+	}
+	bots, _ := Comment(Result{Bots: []Author{{ID: 9, Login: "pre-commit-ci[bot]", Bot: true}}}, "SIGN", "c")
+	if !strings.Contains(bots, "[pre-commit-ci[bot]](https://github.com/apps/pre-commit-ci) (a bot account") || strings.Contains(bots, "SIGN") {
+		t.Errorf("bot line:\n%s", bots)
+	}
+	// Outside the inline-code git name, nothing may mention anyone.
+	if strings.Contains(strings.ReplaceAll(body, "`Eve *bold* @everyone`", ""), "@") {
+		t.Errorf("comment mentions someone:\n%s", body)
 	}
 	if !strings.Contains(body, "`Eve *bold* @everyone`") {
 		t.Errorf("git author name not shown as inline code:\n%s", body)

@@ -56,7 +56,7 @@ func TestLoadFromEnv(t *testing.T) {
 	if cfg.BaseURL != "https://cla.rotki.com" || !cfg.SecureCookies || cfg.AppClientSecret != "client-secret" || string(cfg.WebhookSecret) != "webhook-secret" {
 		t.Fatalf("config %+v", cfg)
 	}
-	if cfg.Org != "rotki" || cfg.StatusContext != "license/cla" || cfg.Workers != 4 {
+	if cfg.Org != "rotki" || cfg.StatusContext != "license/cla" || cfg.Workers != 4 || !cfg.Comments || cfg.AnchorDiscord {
 		t.Fatalf("defaults %+v", cfg)
 	}
 }
@@ -115,6 +115,28 @@ func TestSecretFileErrors(t *testing.T) {
 	t.Setenv("SESSION_KEY_FILE", writeFile(t, "short", "too-short\n"))
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "at least 32 bytes") {
 		t.Fatalf("short key: %v", err)
+	}
+}
+
+func TestSwitches(t *testing.T) {
+	setBase(t)
+	t.Setenv("PR_COMMENTS", "false")
+	t.Setenv("AUDIT_ANCHOR_DISCORD", "true")
+	t.Setenv("DISCORD_WEBHOOK_URL", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "needs DISCORD_WEBHOOK_URL") {
+		t.Fatalf("anchors to Discord without a webhook: %v", err)
+	}
+	t.Setenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1/token")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Comments || !cfg.AnchorDiscord {
+		t.Fatalf("switches %+v", cfg)
+	}
+	t.Setenv("PR_COMMENTS", "maybe")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PR_COMMENTS") {
+		t.Fatalf("got %v", err)
 	}
 }
 

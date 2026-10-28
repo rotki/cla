@@ -167,7 +167,10 @@ func (c *Checker) Skipped(repo string) bool {
 // RefreshRepos lists the repositories the installation covers, and which of
 // them are private. Until it first succeeds no repository is skipped for
 // it; a failure keeps the last list. Called by every sweep and when
-// repositories are added or removed.
+// repositories are added or removed. It lists every page even for an
+// installation on all repositories, one request per 100 of them, so that
+// Skipped alone decides what is private; the sweep's is:public search and
+// the webhook's private flag only save work.
 func (c *Checker) RefreshRepos(ctx context.Context) error {
 	repos, private := map[string]bool{}, map[string]bool{}
 	all := false
@@ -217,6 +220,10 @@ type Hint struct {
 	// matters after a restart, when nothing is remembered. It is ignored
 	// when the head moved since: the new head has no status yet.
 	Known *KnownStatus
+	// Public is set when a webhook just said the repository is public. It
+	// clears a private flag from before the repository was made public, so
+	// its first pull requests do not wait for the next listing.
+	Public bool
 }
 
 // KnownStatus is a status read from GitHub with the commit it is on.
@@ -239,6 +246,11 @@ func (s *Status) On(sha string) *KnownStatus {
 func (c *Checker) CheckPR(ctx context.Context, ref Ref, hint Hint) error {
 	if !c.store.Ready() {
 		return ErrNotReady
+	}
+	if hint.Public {
+		c.mu.Lock()
+		delete(c.private, strings.ToLower(ref.Repo))
+		c.mu.Unlock()
 	}
 	if c.Skipped(ref.Repo) {
 		return nil

@@ -58,6 +58,7 @@ func (j Job) forPeople() bool {
 // moment.
 func (j Job) merge(other Job) Job {
 	j.Hint.Force = j.Hint.Force || other.Hint.Force
+	j.Hint.Public = j.Hint.Public || other.Hint.Public
 	j.Hint.Known = nil
 	people := j.forPeople() || other.forPeople()
 	j.Signed = j.Signed || other.Signed

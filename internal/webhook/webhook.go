@@ -136,21 +136,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) dispatch(kind string, ev event) {
 	if ev.Repository.Private && (kind == "pull_request" || kind == "merge_group") {
-		// Private repositories are never checked, as with cla-assistant:
-		// only the team can contribute there.
+		// Private repositories are never checked, as with cla-assistant.
+		// check.Checker.Skipped is what enforces that; dropping the event
+		// here only saves queuing it.
 		return
 	}
+	// The payload says the repository is public, which outdates a private
+	// flag from before it was made public.
+	public := check.Hint{Public: true}
 	switch kind {
 	case "pull_request":
 		ref := check.Ref{Repo: ev.Repository.Name, Number: ev.PullRequest.Number}
 		switch ev.Action {
 		case "opened", "reopened", "synchronize":
-			h.queue.Enqueue(check.Job{Ref: ref})
+			h.queue.Enqueue(check.Job{Ref: ref, Hint: public})
 		case "edited":
 			// A new base changes which commits the pull request holds, and
 			// so its authors, without a new head commit.
 			if ev.Changes.Base != nil {
-				h.queue.Enqueue(check.Job{Ref: ref})
+				h.queue.Enqueue(check.Job{Ref: ref, Hint: public})
 			}
 		case "closed":
 			h.queue.Enqueue(check.Job{Ref: ref, Closed: true})

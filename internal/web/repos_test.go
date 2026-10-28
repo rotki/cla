@@ -143,3 +143,27 @@ func TestPrivateRepositoriesAreSkipped(t *testing.T) {
 		}
 	}
 }
+
+// A repository made public is checked from its first webhook on, not only
+// after the next listing.
+func TestAPublicWebhookOutdatesThePrivateFlag(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.gh.Mu.Lock()
+	h.gh.Private = []string{"rotki"}
+	h.gh.Mu.Unlock()
+	checker, _, sweeper := h.sweeper(t)
+	sweeper.Sweep(ctx)
+	if !checker.Skipped("rotki") {
+		t.Fatal("private repository not skipped")
+	}
+
+	// Made public; its next pull request event says so.
+	if err := checker.CheckPR(ctx, check.Ref{Repo: "rotki", Number: 1}, check.Hint{Public: true}); err != nil {
+		t.Fatal(err)
+	}
+	if checker.Skipped("rotki") {
+		t.Fatal("still skipped after a webhook said it is public")
+	}
+	h.waitFor(t, "a status on rotki#1", func() bool { return len(h.gh.Statuses) > 0 })
+}

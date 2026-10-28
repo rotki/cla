@@ -13,7 +13,8 @@ footer name you instead of the defaults (rotki's source link and Rotki Solutions
 - **Checks.** On every pull request the App collects the commit authors (the committer when the
   author's email is not linked to an account), skips the allowlist and the exempt team, and
   sets the commit status `license/cla`. One bot comment per pull request lists who still needs to
-  sign and is edited in place. Merge queue commits pass straight away, since each pull request was
+  sign, linking their profiles without @mentions, and is edited in place (`PR_COMMENTS=false`
+  turns it off). Merge queue commits pass straight away, since each pull request was
   checked before it entered the queue.
 - **Signing.** The comment links to `/sign`, which shows the agreement with a GitHub login at its
   end. After logging in, the contributor gives their name, picks one of their verified emails,

@@ -263,7 +263,7 @@ func TestSigningFlow(t *testing.T) {
 	if status.Description != "1 of 2 commit authors have signed the CLA." || !strings.Contains(status.TargetURL, "/sign?") {
 		t.Fatalf("status %+v", status)
 	}
-	if len(h.gh.Comments) != 1 || !strings.Contains(h.gh.Comments[0].Body, "- [ ] @newbie") {
+	if len(h.gh.Comments) != 1 || !strings.Contains(h.gh.Comments[0].Body, "- [ ] [newbie](https://github.com/newbie)") {
 		t.Fatalf("comments %+v", h.gh.Comments)
 	}
 

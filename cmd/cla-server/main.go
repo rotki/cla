@@ -96,7 +96,7 @@ func run() error {
 	}})
 	alerts := alert.New(cfg.DiscordWebhookURL)
 	if cfg.DiscordWebhookURL == "" {
-		slog.Warn("DISCORD_WEBHOOK_URL is not set: alerts and audit anchors only go to this log, which the host can rewrite")
+		slog.Warn("DISCORD_WEBHOOK_URL is not set: alerts only go to this log")
 	}
 	st := store.New(cfg.DataDir)
 	agreement := store.NewAgreement(githubapp.NewPublicClient(cfg.GitHubAPIURL))
@@ -106,6 +106,7 @@ func run() error {
 		StatusContext: cfg.StatusContext,
 		BaseURL:       cfg.BaseURL,
 		BotLogin:      func() string { return app.Slug() + "[bot]" },
+		NoComments:    !cfg.Comments,
 	})
 	queue := check.NewQueue(checker, alerts, app.Limits, 1000)
 	sweeper := reconcile.New(gh, st, agreement, checker, queue, alerts, app.Limits, cfg.Org)
@@ -175,7 +176,7 @@ func run() error {
 	var wg sync.WaitGroup
 	wg.Go(func() { queue.Run(ctx, cfg.Workers) })
 	wg.Go(func() { sweeper.Run(ctx, cfg.ReconcileInterval) })
-	wg.Go(func() { anchor(ctx, st, alerts, cfg.AnchorInterval, cfg.BackupDir) })
+	wg.Go(func() { anchor(ctx, st, alerts, cfg.AnchorInterval, cfg.AnchorDiscord, cfg.BackupDir) })
 	if cfg.BackupDir != "" {
 		wg.Go(func() { backups(ctx, cfg.DataDir, cfg.BackupDir, cfg.BackupInterval, cfg.BackupKeep, alerts) })
 	} else {
@@ -222,16 +223,17 @@ func shutdown(server *http.Server, err error) error {
 // again.
 const anchorRetry = 15 * time.Minute
 
-// anchor publishes the audit log's head to the alert channel at start and
-// then every interval, whenever it moved. The channel keeps a dated copy
-// outside the server, so a log rewritten later no longer matches it; see
-// cla-tool verify -anchor. The whole chain is checked first, and a head
-// counts as published only once Discord accepted it.
+// anchor logs the audit log's head at start and then every interval, whenever
+// it moved, and with post also publishes it to the alert channel. The channel
+// keeps a dated copy outside the server, so a log rewritten later no longer
+// matches it; see cla-tool verify -anchor. Without post, the backup manifests
+// carry the head off the host instead. The whole chain is checked first, and a
+// posted head counts as published only once Discord accepted it.
 //
 // Each check also makes sure the log still holds the last head published
 // (or, after a restart, the head in the newest backup manifest): a log
 // rewritten or cut back to before it would otherwise be anchored anew without an alert.
-func anchor(ctx context.Context, st *store.Store, alerts *alert.Notifier, interval time.Duration, backupDir string) {
+func anchor(ctx context.Context, st *store.Store, alerts *alert.Notifier, interval time.Duration, post bool, backupDir string) {
 	var published audit.Event
 	if backupDir != "" {
 		if m, ok, err := records.LatestManifest(backupDir); err == nil && ok && m.Events > 0 {
@@ -256,6 +258,10 @@ func anchor(ctx context.Context, st *store.Store, alerts *alert.Notifier, interv
 			alerts.Report(alert.AuditBroken, alert.Detail{})
 		case chain.Events == 0 || chain.Head == published.Hash:
 			alerts.Resolve(alert.AuditBroken)
+		case !post:
+			alerts.Resolve(alert.AuditBroken)
+			slog.Info("audit anchor", "seq", chain.Events, "hash", chain.Head)
+			published = audit.Event{Seq: chain.Events, Hash: chain.Head}
 		default:
 			alerts.Resolve(alert.AuditBroken)
 			switch err := alerts.Anchor(ctx, chain.Events, chain.Head); {

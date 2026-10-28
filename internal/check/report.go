@@ -59,13 +59,13 @@ func Comment(r Result, signURL, claURL string) (body string, needed bool) {
 	// the comment past GitHub's 65,536 character limit.
 	lines := make([]string, 0, r.Total())
 	for _, a := range r.Unsigned {
-		lines = append(lines, "- [ ] @"+a.Login)
+		lines = append(lines, "- [ ] "+profile(a.Login))
 	}
 	for _, a := range r.Pending {
-		lines = append(lines, "- [ ] @"+a.Login+" (employer signature waiting for an admin to confirm it)")
+		lines = append(lines, "- [ ] "+profile(a.Login)+" (employer signature waiting for an admin to confirm it)")
 	}
 	for _, a := range r.Signed {
-		lines = append(lines, "- [x] @"+a.Login)
+		lines = append(lines, "- [x] "+profile(a.Login))
 	}
 	lines, more := capped(lines, maxListed)
 	for _, line := range lines {
@@ -103,6 +103,15 @@ func capped(items []string, limit int) (shown []string, more int) {
 		return items, 0
 	}
 	return items[:limit], len(items) - limit
+}
+
+// profile names an account by a link to its profile rather than an
+// @mention, so the comment notifies nobody, as with cla-assistant: authors
+// already hear about their pull request, and the comment is rewritten on
+// every push. Logins are letters, digits and hyphens (plus "[bot]" for an
+// App), so they need no escaping.
+func profile(login string) string {
+	return "[" + login + "](https://github.com/" + login + ")"
 }
 
 // codeSpan shows a git author name, which anyone can set to anything, as

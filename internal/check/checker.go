@@ -39,6 +39,9 @@ type Checker struct {
 	blocks   map[Ref][]int64
 	comments map[Ref]comment
 	last     map[Ref]lastCheck
+	// repos is the installation's repositories, lower-cased, when it covers
+	// only some; nil until listed, or when it covers all of them.
+	repos map[string]bool
 }
 
 // lastCheck is what was last reported for a pull request, with the authors it
@@ -141,14 +144,56 @@ func (c *Checker) Context() string {
 	return c.context
 }
 
-// Skipped reports whether a repo is never checked.
+// Skipped reports whether a repo is never checked: excluded in config.json,
+// or outside an installation that covers only some repositories. The org
+// search finds open pull requests in every public repository, installed or
+// not, and the App can write statuses only where it is installed.
 func (c *Checker) Skipped(repo string) bool {
 	for _, r := range c.store.Config().ExcludedRepos {
 		if strings.EqualFold(r, repo) {
 			return true
 		}
 	}
-	return false
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.repos != nil && !c.repos[strings.ToLower(repo)]
+}
+
+// RefreshRepos lists the repositories the installation covers. Until it
+// first succeeds no repository is skipped for it; a failure keeps the last
+// list. Called by every sweep and when repositories are added or removed.
+func (c *Checker) RefreshRepos(ctx context.Context) error {
+	var repos map[string]bool
+	for page := 1; ; page++ {
+		var resp struct {
+			TotalCount          int    `json:"total_count"`
+			RepositorySelection string `json:"repository_selection"`
+			Repositories        []struct {
+				Name string `json:"name"`
+			} `json:"repositories"`
+		}
+		path := fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page)
+		if _, err := c.gh.Do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return err
+		}
+		if resp.RepositorySelection == "all" {
+			repos = nil
+			break
+		}
+		if repos == nil {
+			repos = map[string]bool{}
+		}
+		for _, r := range resp.Repositories {
+			repos[strings.ToLower(r.Name)] = true
+		}
+		if len(resp.Repositories) < 100 || len(repos) >= resp.TotalCount {
+			break
+		}
+	}
+	c.mu.Lock()
+	c.repos = repos
+	c.mu.Unlock()
+	return nil
 }
 
 // Hint is what the caller already knows about a pull request.

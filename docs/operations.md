@@ -79,12 +79,14 @@ proxy in front sets it (Traefik does by default), else the peer address. Health 
 inside the container are not logged.
 
 With `DISCORD_WEBHOOK_URL` set, these go to Discord. None carries personal data or error
-text, only the problem, the repository and pull request where there is one, and GitHub's
-status code.
+text, only the problem, the repository and pull request where there is one, which GitHub call
+failed (in words, such as "while setting the commit status") and GitHub's status code with its
+name, for example `rotki#12 while setting the commit status (GitHub 502 Bad Gateway)`.
 
 | Alert | When |
 |---|---|
-| CLA check failed | a pull request could not be checked or its status not posted |
+| The App has no access to a repository | GitHub answered 403 or 404 for a repository: the App is not installed there, or a permission is missing |
+| CLA check failed | a pull request could not be checked or its status not posted, for any other reason |
 | GitHub rate limit reached | a check or sweep hit a limit and was deferred |
 | Reconcile sweep failed | the periodic search for open pull requests failed |
 | Reading / writing the data directory failed | a refresh, the admin page or a signing could not use the volume |

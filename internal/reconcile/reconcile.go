@@ -113,6 +113,13 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 		// The sweep goes on with the team as last fetched.
 		slog.Warn("refreshing the exempt team failed", "error", err)
 	}
+	if err := s.checker.RefreshRepos(ctx); err != nil {
+		if s.limited(err) {
+			return
+		}
+		// The sweep goes on with the repositories as last listed.
+		slog.Warn("listing the installation's repositories failed", "error", err)
+	}
 
 	open, complete, err := s.sweep(ctx, s.orgQuery(), false)
 	if err != nil {
@@ -130,6 +137,20 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 func (s *Sweeper) SweepRepo(ctx context.Context, repo string) error {
 	_, _, err := s.sweep(ctx, fmt.Sprintf("repo:%s/%s is:pr is:open", s.owner, repo), false)
 	return err
+}
+
+// ReposChanged follows repositories added to or removed from the
+// installation: it lists them again, so removed ones are skipped from now on,
+// then queues the open pull requests of each added one.
+func (s *Sweeper) ReposChanged(ctx context.Context, added []string) {
+	if err := s.checker.RefreshRepos(ctx); err != nil {
+		slog.Warn("listing the installation's repositories failed", "error", err)
+	}
+	for _, repo := range added {
+		if err := s.SweepRepo(ctx, repo); err != nil {
+			slog.Error("sweeping a newly added repository failed", "repo", repo, "error", err)
+		}
+	}
 }
 
 // searchLag is how far GitHub's search index may trail the events: a pull

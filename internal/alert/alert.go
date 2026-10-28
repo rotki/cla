@@ -33,6 +33,7 @@ const (
 	BackupFailed   Kind = "backup_failed"
 	BackupProblems Kind = "backup_unverified"
 	AuditBroken    Kind = "audit_broken"
+	NoAccess       Kind = "no_access"
 )
 
 var titles = map[Kind]string{
@@ -45,6 +46,7 @@ var titles = map[Kind]string{
 	BackupFailed:   "Backup of the signatures failed or was skipped, retrying",
 	BackupProblems: "Backup written, but the data failed verification: run cla-tool verify",
 	AuditBroken:    "The audit log chain is broken, no anchor published: run cla-tool verify",
+	NoAccess:       "The App has no access to a repository it was asked to check: it is not installed there, or a permission is missing. Check the App's installation and permissions",
 }
 
 // Detail is everything a message may carry. Keep it free of personal data.
@@ -53,6 +55,8 @@ type Detail struct {
 	PR       int
 	Status   int
 	Problems int
+	// Call is what was being done, from githubapp.Call: a fixed phrase.
+	Call string
 }
 
 func (d Detail) String() string {
@@ -63,11 +67,23 @@ func (d Detail) String() string {
 			s += fmt.Sprintf("#%d", d.PR)
 		}
 	}
+	if d.Call != "" {
+		if s != "" {
+			s += " "
+		}
+		s += "while " + d.Call
+	}
 	if d.Status > 0 {
 		if s != "" {
 			s += " "
 		}
-		s += fmt.Sprintf("(GitHub %d)", d.Status)
+		// The status in words too: a bare "403" says little to whoever reads
+		// the channel.
+		if text := http.StatusText(d.Status); text != "" {
+			s += fmt.Sprintf("(GitHub %d %s)", d.Status, text)
+		} else {
+			s += fmt.Sprintf("(GitHub %d)", d.Status)
+		}
 	}
 	if d.Problems > 0 {
 		if s != "" {

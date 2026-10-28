@@ -47,8 +47,9 @@ here and below with the host the service runs on.
 | Logo | rotki's is [`examples/app-icon.png`](../examples/app-icon.png) (source: `app-icon.svg`); GitHub shows it at about 20 px next to the status |
 
 Install it on all repositories, or the ones that take outside contributions. The App cannot
-write to any repository's contents: signatures live on the server, not on GitHub.
-`excluded_repos` are never checked. Generate a private key and a client secret.
+write to any repository's contents: signatures live on the server, not on GitHub. Only the
+repositories the installation covers are checked; the service lists them on every sweep and
+whenever repositories are added or removed. `excluded_repos` are never checked. Generate a private key and a client secret.
 
 ## 4. Configuration
 

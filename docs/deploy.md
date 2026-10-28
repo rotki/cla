@@ -49,7 +49,10 @@ here and below with the host the service runs on.
 Install it on all repositories, or the ones that take outside contributions. The App cannot
 write to any repository's contents: signatures live on the server, not on GitHub. Only the
 repositories the installation covers are checked; the service lists them on every sweep and
-whenever repositories are added or removed. `excluded_repos` are never checked. Generate a private key and a client secret.
+whenever repositories are added or removed. Private repositories are never checked, as with
+cla-assistant: only the organization's own people can contribute there, so "All repositories"
+means every public one, and a repository made public is checked from the next listing.
+`excluded_repos` are never checked either. Generate a private key and a client secret.
 
 ## 4. Configuration
 

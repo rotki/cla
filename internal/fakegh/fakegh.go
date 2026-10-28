@@ -66,6 +66,23 @@ type Server struct {
 	// Installed lists the repositories the installation covers; nil means
 	// all of them. Like GitHub, statuses on any other repository get a 403.
 	Installed []string
+	// Private lists the private repositories. Like GitHub, a search with
+	// is:public leaves out their pull requests.
+	Private []string
+}
+
+// repoNames is every repository the fake knows of: those with pull
+// requests, plus the private ones.
+func (s *Server) repoNames() []string {
+	names := slices.Clone(s.Private)
+	for key := range s.PRs {
+		name, _, _ := strings.Cut(key, "#")
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 func New() *Server {
@@ -155,12 +172,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "<p>%d chars of markdown</p>", len(body.Text))
 
 	case r.Method == http.MethodGet && p == "/installation/repositories":
-		selection, repos := "all", []map[string]string{}
+		selection, names := "all", s.repoNames()
 		if s.Installed != nil {
-			selection = "selected"
-			for _, name := range s.Installed {
-				repos = append(repos, map[string]string{"name": name})
-			}
+			selection, names = "selected", s.Installed
+		}
+		repos := []map[string]any{}
+		for _, name := range names {
+			repos = append(repos, map[string]any{"name": name, "private": slices.Contains(s.Private, name)})
 		}
 		writeJSON(w, 200, map[string]any{"total_count": len(repos), "repository_selection": selection, "repositories": repos})
 
@@ -201,7 +219,8 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 		var nodes []map[string]any
 		for key, pr := range s.PRs {
 			repoName, num, _ := strings.Cut(key, "#")
-			if !pr.Open || (strings.Contains(query, "repo:") && !strings.Contains(query, "/"+repoName+" ")) {
+			if !pr.Open || (strings.Contains(query, "repo:") && !strings.Contains(query, "/"+repoName+" ")) ||
+				(strings.Contains(query, "is:public") && slices.Contains(s.Private, repoName)) {
 				continue
 			}
 			var n int

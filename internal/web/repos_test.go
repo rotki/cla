@@ -102,3 +102,44 @@ func TestNoAccessClearsWhenTheRepositoryLeavesTheInstallation(t *testing.T) {
 	sweeper.Sweep(ctx)
 	waitForAlert(t, logs, "**Recovered:** The App has no access")
 }
+
+func TestPrivateRepositoriesAreSkipped(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.gh.Mu.Lock()
+	h.gh.PRs["internal#3"] = fakegh.PR{Open: true, HeadSHA: "head3", Commits: []fakegh.Commit{
+		{AuthorName: "Other", AuthorID: 600, AuthorLogin: "other"},
+	}}
+	h.gh.Private = []string{"internal"}
+	h.gh.Mu.Unlock()
+
+	// Installed on all repositories, private ones included.
+	checker, queue, sweeper := h.sweeper(t)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go queue.Run(runCtx, 1)
+	sweeper.Sweep(ctx)
+
+	if !checker.Skipped("internal") || !checker.Skipped("Internal") || checker.Skipped("rotki") {
+		t.Fatal("skips the wrong repositories")
+	}
+	// Even asked directly, as a webhook for it would, it does nothing.
+	if err := checker.CheckPR(ctx, check.Ref{Repo: "internal", Number: 3}, check.Hint{}); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor(t, "a status on rotki#1", func() bool {
+		for _, st := range h.gh.Statuses {
+			if st.Repo == "rotki" {
+				return true
+			}
+		}
+		return false
+	})
+	h.gh.Mu.Lock()
+	defer h.gh.Mu.Unlock()
+	for _, st := range h.gh.Statuses {
+		if st.Repo == "internal" {
+			t.Fatalf("checked a private repository: %+v", st)
+		}
+	}
+}

@@ -42,6 +42,8 @@ type Checker struct {
 	// repos is the installation's repositories, lower-cased, when it covers
 	// only some; nil until listed, or when it covers all of them.
 	repos map[string]bool
+	// private is its private repositories, lower-cased, from the same list.
+	private map[string]bool
 }
 
 // lastCheck is what was last reported for a pull request, with the authors it
@@ -145,53 +147,62 @@ func (c *Checker) Context() string {
 }
 
 // Skipped reports whether a repo is never checked: excluded in config.json,
-// or outside an installation that covers only some repositories. The org
-// search finds open pull requests in every public repository, installed or
-// not, and the App can write statuses only where it is installed.
+// private, or outside an installation that covers only some repositories.
+// Private repositories are skipped as cla-assistant skips them: only the
+// team can contribute there. The org search finds open pull requests in
+// every public repository, installed or not, and the App can write statuses
+// only where it is installed.
 func (c *Checker) Skipped(repo string) bool {
 	for _, r := range c.store.Config().ExcludedRepos {
 		if strings.EqualFold(r, repo) {
 			return true
 		}
 	}
+	name := strings.ToLower(repo)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.repos != nil && !c.repos[strings.ToLower(repo)]
+	return c.private[name] || (c.repos != nil && !c.repos[name])
 }
 
-// RefreshRepos lists the repositories the installation covers. Until it
-// first succeeds no repository is skipped for it; a failure keeps the last
-// list. Called by every sweep and when repositories are added or removed.
+// RefreshRepos lists the repositories the installation covers, and which of
+// them are private. Until it first succeeds no repository is skipped for
+// it; a failure keeps the last list. Called by every sweep and when
+// repositories are added or removed.
 func (c *Checker) RefreshRepos(ctx context.Context) error {
-	var repos map[string]bool
-	for page := 1; ; page++ {
+	repos, private := map[string]bool{}, map[string]bool{}
+	all := false
+	for page, seen := 1, 0; ; page++ {
 		var resp struct {
 			TotalCount          int    `json:"total_count"`
 			RepositorySelection string `json:"repository_selection"`
 			Repositories        []struct {
-				Name string `json:"name"`
+				Name    string `json:"name"`
+				Private bool   `json:"private"`
 			} `json:"repositories"`
 		}
 		path := fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page)
 		if _, err := c.gh.Do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 			return err
 		}
-		if resp.RepositorySelection == "all" {
-			repos = nil
-			break
-		}
-		if repos == nil {
-			repos = map[string]bool{}
-		}
+		all = resp.RepositorySelection == "all"
 		for _, r := range resp.Repositories {
-			repos[strings.ToLower(r.Name)] = true
+			name := strings.ToLower(r.Name)
+			repos[name] = true
+			if r.Private {
+				private[name] = true
+			}
 		}
-		if len(resp.Repositories) < 100 || len(repos) >= resp.TotalCount {
+		seen += len(resp.Repositories)
+		if len(resp.Repositories) < 100 || seen >= resp.TotalCount {
 			break
 		}
 	}
+	if all {
+		// Covers every repository, including ones created after this list.
+		repos = nil
+	}
 	c.mu.Lock()
-	c.repos = repos
+	c.repos, c.private = repos, private
 	c.mu.Unlock()
 	return nil
 }

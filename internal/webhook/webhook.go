@@ -78,7 +78,8 @@ type event struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 	Repository struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		Private bool   `json:"private"`
 	} `json:"repository"`
 	PullRequest struct {
 		Number int `json:"number"`
@@ -134,6 +135,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) dispatch(kind string, ev event) {
+	if ev.Repository.Private && (kind == "pull_request" || kind == "merge_group") {
+		// Private repositories are never checked, as with cla-assistant:
+		// only the team can contribute there.
+		return
+	}
 	switch kind {
 	case "pull_request":
 		ref := check.Ref{Repo: ev.Repository.Name, Number: ev.PullRequest.Number}

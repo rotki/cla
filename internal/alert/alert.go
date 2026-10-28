@@ -73,11 +73,6 @@ func ForError(fallback Kind, err error, d Detail, graphql string) (Kind, Detail)
 	return fallback, d
 }
 
-// ReportError reports a GitHub error as ForError classifies it.
-func (n *Notifier) ReportError(fallback Kind, err error, d Detail, graphql string) {
-	n.Report(ForError(fallback, err, d, graphql))
-}
-
 // Detail is everything a message may carry. Keep it free of personal data.
 type Detail struct {
 	Repo     string
@@ -156,6 +151,11 @@ func New(webhookURL string) *Notifier {
 	}
 	n.send = n.post
 	return n
+}
+
+// ReportError reports a GitHub error as ForError classifies it.
+func (n *Notifier) ReportError(fallback Kind, err error, d Detail, graphql string) {
+	n.Report(ForError(fallback, err, d, graphql))
 }
 
 // Report records one occurrence of a problem.

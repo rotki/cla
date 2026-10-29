@@ -146,6 +146,12 @@ func (c *Checker) Context() string {
 	return c.context
 }
 
+// BotLogin is the App's bot account, "<app slug>[bot]", which sets the
+// statuses and comments.
+func (c *Checker) BotLogin() string {
+	return c.botLogin()
+}
+
 // Skipped reports whether a repo is never checked: excluded in config.json,
 // private, or outside an installation that covers only some repositories.
 // Private repositories are skipped as cla-assistant skips them: only the

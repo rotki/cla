@@ -41,7 +41,7 @@ const openPRsQuery = `query($query: String!, $cursor: String, $context: String!)
         number
         headRefOid
         repository { name }
-        commits(last: 1) { nodes { commit { status { context(name: $context) { state description } } } } }
+        commits(last: 1) { nodes { commit { status { context(name: $context) { state description creator { login } } } } } }
       }
     }
   }
@@ -234,7 +234,7 @@ func (s *Sweeper) sweep(ctx context.Context, query string, all bool) (open map[c
 			}
 			ref := check.Ref{Repo: pr.Repository.Name, Number: pr.Number}
 			open[ref] = true
-			known := knownStatus(pr.Commits.Nodes)
+			known := knownStatus(pr.Commits.Nodes, s.checker.BotLogin())
 			switch {
 			case all:
 				s.queue.Enqueue(check.Job{Ref: ref, Bulk: true, Hint: check.Hint{Known: known.On(pr.HeadRefOid), Force: known == nil}})
@@ -261,18 +261,32 @@ type headCommit struct {
 			Context *struct {
 				State       string `json:"state"`
 				Description string `json:"description"`
+				Creator     *struct {
+					Login string `json:"login"`
+				} `json:"creator"`
 			} `json:"context"`
 		} `json:"status"`
 	} `json:"commit"`
 }
 
 // knownStatus is our status on the head commit, or nil when there is none.
-func knownStatus(nodes []headCommit) *check.Status {
+// A status under the same name from anyone else, such as the CLA tool this
+// service replaced, is not ours: taking its success for ours would leave the
+// pull request without a status from the App, which branch protection pinned
+// to the App does not accept. GraphQL names the App's bot by its slug alone,
+// without the "[bot]" that bot is passed with.
+func knownStatus(nodes []headCommit, bot string) *check.Status {
 	if len(nodes) == 0 {
 		return nil
 	}
 	st := nodes[0].Commit.Status
 	if st == nil || st.Context == nil {
+		return nil
+	}
+	// Without the App's slug nothing would match, and every sweep would
+	// post every status again; take any creator's then, as before.
+	if slug := strings.TrimSuffix(bot, "[bot]"); slug != "" &&
+		(st.Context.Creator == nil || !strings.EqualFold(st.Context.Creator.Login, slug)) {
 		return nil
 	}
 	return &check.Status{State: strings.ToLower(st.Context.State), Description: st.Context.Description}

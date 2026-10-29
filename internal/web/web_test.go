@@ -630,6 +630,47 @@ func TestSweepAfterRestartSendsNoDuplicateStatus(t *testing.T) {
 	}
 }
 
+func TestSweepReplacesAnotherToolsStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sweep func(context.Context, *reconcile.Sweeper)
+	}{
+		{"periodic", func(ctx context.Context, s *reconcile.Sweeper) { s.Sweep(ctx) }},
+		{"manual", func(ctx context.Context, s *reconcile.Sweeper) {
+			if _, err := s.RecheckAll(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			// The tool this service replaced reported the same result under the
+			// same name; branch protection pinned to the App does not accept it.
+			if err := h.checker.CheckPR(ctx, check.Ref{Repo: "rotki", Number: 1}, check.Hint{}); err != nil {
+				t.Fatal(err)
+			}
+			h.gh.Mu.Lock()
+			head := h.gh.PRs["rotki#1"].HeadSHA
+			h.gh.Statuses[len(h.gh.Statuses)-1].Creator = "cla-assistant"
+			h.gh.Mu.Unlock()
+
+			_, queue, sweeper := h.sweeper(t)
+			tc.sweep(ctx, sweeper)
+			if queue.Depth() != 1 {
+				t.Fatalf("queued %d jobs, want the pull request checked again", queue.Depth())
+			}
+			runCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			go queue.Run(runCtx, 1)
+			h.waitFor(t, "a status from the App", func() bool {
+				last := h.gh.Statuses[len(h.gh.Statuses)-1]
+				return last.Creator == "" && last.SHA == head && last.Context == "license/cla"
+			})
+		})
+	}
+}
+
 // sweeper returns a fresh checker, queue and sweeper on the harness's fake.
 func (h *harness) sweeper(t *testing.T) (*check.Checker, *check.Queue, *reconcile.Sweeper) {
 	t.Helper()

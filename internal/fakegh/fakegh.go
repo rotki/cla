@@ -3,6 +3,7 @@
 package fakegh
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,9 +29,12 @@ type PR struct {
 	Commits     []Commit
 }
 
-// Status is a commit status the service set.
+// Status is a commit status on a fake pull request.
 type Status struct {
 	Repo, SHA, State, Context, Description, TargetURL string
+	// Creator is who set a status the service did not, such as the tool it
+	// replaced; empty means the service's App.
+	Creator string
 }
 
 // Comment is an issue comment.
@@ -229,7 +233,12 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 			for i := len(s.Statuses) - 1; i >= 0; i-- {
 				st := s.Statuses[i]
 				if st.Repo == repoName && st.SHA == pr.HeadSHA && st.Context == context {
-					status = map[string]any{"context": map[string]string{"state": strings.ToUpper(st.State), "description": st.Description}}
+					// GraphQL names an App's bot by its slug, without "[bot]".
+					creator := cmp.Or(st.Creator, strings.TrimSuffix(s.BotLogin, "[bot]"))
+					status = map[string]any{"context": map[string]any{
+						"state": strings.ToUpper(st.State), "description": st.Description,
+						"creator": map[string]string{"login": creator},
+					}}
 					break
 				}
 			}

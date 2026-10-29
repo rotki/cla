@@ -65,11 +65,19 @@ Replacing another CLA tool without a gap:
    and `PR_COMMENTS=false` next to the old tool, so both report, nothing is required yet, and
    only the old tool comments. Compare the two statuses on real pull requests for a while.
 3. Take a final export from the old tool and import it.
-4. Switch to `STATUS_CONTEXT=license/cla` and `PR_COMMENTS=true`, install the App on every repository, make the
-   status required in branch protection (see [Security model](design.md#security-model)), then remove the old tool's
-   webhook and link.
+4. Remove the old tool's webhook and link, so it stops posting under the name the App takes over.
+5. Switch to `STATUS_CONTEXT=license/cla` and `PR_COMMENTS=true` and install the App on every
+   repository. The sweep at startup re-checks every open pull request whose status came from
+   the old tool and posts the App's own.
+6. Once it has, make the status required from the App in branch protection (see
+   [Security model](design.md#security-model)). Pinned earlier, an open pull request that only
+   carries the old tool's success cannot merge until it gets a push.
 
-Starting fresh, without an earlier tool, only step 3 applies.
+The `license/cla-next` statuses from step 2 stay on the commits they were set on: GitHub has no
+way to delete a commit status. Nothing requires them, and a pull request stops showing its one
+with the next push.
+
+Starting fresh, without an earlier tool, only the seed in step 1 and step 6 apply.
 
 ## Logs and alerts
 

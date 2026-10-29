@@ -94,8 +94,8 @@ func (s *Server) Handler(webhook http.Handler) http.Handler {
 	mux.Handle("POST /webhook", webhook)
 	mux.HandleFunc("GET /theme.css", s.theme)
 	mux.HandleFunc("GET /logo", s.logo)
-	mux.HandleFunc("GET /healthz", s.health)
-	mux.HandleFunc("GET /ready", s.ready)
+	mux.HandleFunc("GET "+healthPath, s.health)
+	mux.HandleFunc("GET "+readyPath, s.ready)
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /cla", s.cla)
 	mux.HandleFunc("GET /login", s.login)
@@ -114,7 +114,10 @@ func (s *Server) Handler(webhook http.Handler) http.Handler {
 // The query is left out, since the OAuth callback carries the code there.
 // The client is X-Real-Ip, which the proxy in front sets, or the peer
 // address; X-Forwarded-For is not used, as clients can prepend to it.
-// Health probes from inside the container are not logged.
+// Health probes that pass and reach the service directly are not logged: the
+// container's own check and the proxy's, which carry no X-Real-Ip since they
+// do not pass through the proxy's routers. Failing probes and probes from
+// outside are.
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -122,12 +125,10 @@ func accessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		remote := r.Header.Get("X-Real-Ip")
 		if remote == "" {
-			remote, _, _ = net.SplitHostPort(r.RemoteAddr)
-		}
-		if r.URL.Path == "/healthz" || r.URL.Path == "/ready" {
-			if ip := net.ParseIP(remote); ip != nil && ip.IsLoopback() {
+			if isProbe(r.URL.Path) && rec.status == http.StatusOK {
 				return
 			}
+			remote, _, _ = net.SplitHostPort(r.RemoteAddr)
 		}
 		slog.Info("request",
 			"method", r.Method,
@@ -137,6 +138,16 @@ func accessLog(next http.Handler) http.Handler {
 			"remote", remote,
 		)
 	})
+}
+
+// The health probe paths, which the container's check and the proxy poll.
+const (
+	healthPath = "/healthz"
+	readyPath  = "/ready"
+)
+
+func isProbe(path string) bool {
+	return path == healthPath || path == readyPath
 }
 
 type statusRecorder struct {

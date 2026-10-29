@@ -60,7 +60,7 @@ func TestAccessLogSkipsDirectProbes(t *testing.T) {
 		logs.paths = nil
 		logs.mu.Unlock()
 		status = tc.status
-		r := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		r := httptest.NewRequest(http.MethodGet, tc.path, http.NoBody)
 		r.RemoteAddr = "10.0.1.31:41234"
 		if tc.realIP != "" {
 			r.Header.Set("X-Real-Ip", tc.realIP)

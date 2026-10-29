@@ -75,8 +75,12 @@ Starting fresh, without an earlier tool, only step 3 applies.
 
 The service logs JSON to stdout. Each request gets an access log line with the method, path
 (never the query), status, duration and client address. The address is `X-Real-Ip` as the
-proxy in front sets it (Traefik does by default), else the peer address. Health probes from
-inside the container are not logged.
+proxy in front sets it (Traefik does by default), else the peer address. A health probe
+(`/healthz`, `/ready`) that passes and carries no `X-Real-Ip` is not logged: that covers the
+container's own check and Traefik's, which reach the service directly. Failing probes are
+always logged. This relies on the proxy setting `X-Real-Ip` on what it forwards; behind a
+proxy that does not, outside probes that pass go unlogged too, as do passing probes from
+other containers on the same network.
 
 With `DISCORD_WEBHOOK_URL` set, these go to Discord. None carries personal data or error
 text, only the problem, the repository and pull request where there is one, which GitHub call

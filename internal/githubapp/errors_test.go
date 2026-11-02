@@ -59,3 +59,21 @@ func TestCall(t *testing.T) {
 		}
 	}
 }
+
+func TestTransient(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("connection reset"), true},
+		{&APIError{Status: 502}, true},
+		{&RateLimitError{APIError: APIError{Status: 403}, RetryAt: time.Now()}, true},
+		{&APIError{Status: 401}, false},
+		{&APIError{Status: 422}, false},
+	}
+	for _, tc := range cases {
+		if got := Transient(tc.err); got != tc.want {
+			t.Errorf("Transient(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}

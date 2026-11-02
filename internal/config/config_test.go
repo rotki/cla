@@ -90,62 +90,66 @@ func TestLoadFromSecretFiles(t *testing.T) {
 }
 
 func TestLoginClient(t *testing.T) {
-	setBase(t)
-	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "Ov23login")
-	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET_FILE", writeFile(t, "login", "login-secret\n"))
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
+	// Each case starts from setBase, where only the App's client is set.
+	login := map[string]string{"GITHUB_LOGIN_CLIENT_ID": "Ov23login", "GITHUB_LOGIN_CLIENT_SECRET": "login-secret"}
+	with := func(base map[string]string, extra ...string) map[string]string {
+		env := map[string]string{}
+		for k, v := range base {
+			env[k] = v
+		}
+		for i := 0; i < len(extra); i += 2 {
+			env[extra[i]] = extra[i+1]
+		}
+		return env
 	}
-	if cfg.LoginClientID != "Ov23login" || cfg.LoginClientSecret != "login-secret" {
-		t.Fatalf("login app not preferred: %q %q", cfg.LoginClientID, cfg.LoginClientSecret)
+	cases := []struct {
+		name    string
+		env     map[string]string
+		files   map[string]string
+		wantID  string
+		wantErr string
+	}{
+		{name: "login app preferred", env: login, wantID: "Ov23login"},
+		{name: "login secret from a file", env: with(nil, "GITHUB_LOGIN_CLIENT_ID", "Ov23login"),
+			files: map[string]string{"GITHUB_LOGIN_CLIENT_SECRET_FILE": "login-secret\n"}, wantID: "Ov23login"},
+		{name: "login app without the App's client", env: with(login, "GITHUB_APP_CLIENT_ID", "", "GITHUB_APP_CLIENT_SECRET", ""), wantID: "Ov23login"},
+		{name: "fallback to the App's client", wantID: "Iv1.abc"},
+		{name: "half a login app", env: with(nil, "GITHUB_LOGIN_CLIENT_ID", "Ov23login"),
+			wantErr: "GITHUB_LOGIN_CLIENT_ID and GITHUB_LOGIN_CLIENT_SECRET"},
+		{name: "half an App client beside the login app", env: with(login, "GITHUB_APP_CLIENT_SECRET", ""),
+			wantErr: "GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET"},
+		{name: "App client secret set twice beside the login app", env: login,
+			files: map[string]string{"GITHUB_APP_CLIENT_SECRET_FILE": "other"}, wantErr: "not both"},
+		{name: "no client at all", env: with(nil, "GITHUB_APP_CLIENT_ID", "", "GITHUB_APP_CLIENT_SECRET", ""),
+			wantErr: "GITHUB_LOGIN_CLIENT_ID"},
 	}
-
-	// The login app alone is enough: the GitHub App needs no client then.
-	t.Setenv("GITHUB_APP_CLIENT_ID", "")
-	t.Setenv("GITHUB_APP_CLIENT_SECRET", "")
-	if _, err := Load(); err != nil {
-		t.Fatalf("login app without the App's client: %v", err)
-	}
-
-	// Half a login app is a mistake, not a reason to fall back.
-	t.Setenv("GITHUB_APP_CLIENT_ID", "Iv1.abc")
-	t.Setenv("GITHUB_APP_CLIENT_SECRET", "client-secret")
-	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET_FILE", "")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_LOGIN_CLIENT_ID and GITHUB_LOGIN_CLIENT_SECRET") {
-		t.Fatalf("half-set login app: %v", err)
-	}
-
-	// Without a login app, the GitHub App's client is used.
-	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "")
-	cfg, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LoginClientID != "Iv1.abc" || cfg.LoginClientSecret != "client-secret" {
-		t.Fatalf("no fallback to the App's client: %q %q", cfg.LoginClientID, cfg.LoginClientSecret)
-	}
-
-	// A broken fallback is reported even while the login app is in use.
-	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "Ov23login")
-	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET", "login-secret")
-	t.Setenv("GITHUB_APP_CLIENT_SECRET", "")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET") {
-		t.Fatalf("half-set App client beside the login app: %v", err)
-	}
-	t.Setenv("GITHUB_APP_CLIENT_SECRET", "client-secret")
-	t.Setenv("GITHUB_APP_CLIENT_SECRET_FILE", writeFile(t, "app", "other"))
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "not both") {
-		t.Fatalf("App client secret set twice beside the login app: %v", err)
-	}
-
-	t.Setenv("GITHUB_APP_CLIENT_SECRET_FILE", "")
-	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "")
-	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET", "")
-	t.Setenv("GITHUB_APP_CLIENT_ID", "")
-	t.Setenv("GITHUB_APP_CLIENT_SECRET", "")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_LOGIN_CLIENT_ID") {
-		t.Fatalf("no login client: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setBase(t)
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			for name, content := range tc.files {
+				t.Setenv(name, writeFile(t, strings.ToLower(name), content))
+			}
+			cfg, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSecret := "client-secret"
+			if tc.wantID == "Ov23login" {
+				wantSecret = "login-secret"
+			}
+			if cfg.LoginClientID != tc.wantID || cfg.LoginClientSecret != wantSecret {
+				t.Fatalf("login client %q %q, want %q %q", cfg.LoginClientID, cfg.LoginClientSecret, tc.wantID, wantSecret)
+			}
+		})
 	}
 }
 

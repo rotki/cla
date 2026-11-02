@@ -6,7 +6,6 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -392,15 +391,14 @@ func TestEmployerSignatureNeedsAdmin(t *testing.T) {
 
 func TestRevokeRetries(t *testing.T) {
 	h := newHarness(t)
-	h.srv.revokeDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	h.srv.OAuth.RevokeDelays = []time.Duration{time.Millisecond, time.Millisecond}
 	h.gh.Mu.Lock()
 	h.gh.RevokeFailures = 2
 	h.gh.Mu.Unlock()
 	h.login(t, "/sign")
 	h.waitFor(t, "the user token revoked on the third attempt", func() bool { return h.gh.Revoked == 1 })
 
-	// A shutdown waits for a revoke in flight and skips its pauses.
-	h.srv.revokeDelays = []time.Duration{time.Hour, time.Hour}
+	// A shutdown waits for a revoke in flight.
 	h.gh.Mu.Lock()
 	h.gh.RevokeFailures = 1
 	h.gh.Mu.Unlock()
@@ -412,21 +410,6 @@ func TestRevokeRetries(t *testing.T) {
 	defer h.gh.Mu.Unlock()
 	if ctx.Err() != nil || h.gh.Revoked != 2 {
 		t.Fatalf("shutdown left the revoke unfinished: revoked %d, %v", h.gh.Revoked, ctx.Err())
-	}
-}
-
-func TestRetryable(t *testing.T) {
-	cases := map[error]bool{
-		errors.New("connection reset"):                              true,
-		&githubapp.APIError{Status: http.StatusBadGateway}:          true,
-		&githubapp.APIError{Status: http.StatusTooManyRequests}:     true,
-		&githubapp.APIError{Status: http.StatusUnauthorized}:        false,
-		&githubapp.APIError{Status: http.StatusUnprocessableEntity}: false,
-	}
-	for err, want := range cases {
-		if got := retryable(err); got != want {
-			t.Errorf("retryable(%v) = %v, want %v", err, got, want)
-		}
 	}
 }
 

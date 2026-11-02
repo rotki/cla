@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/rotki/cla/internal/alert"
@@ -313,56 +312,31 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// revoke invalidates a user token in the background, trying again on
-// failures that may pass. Once a drain has begun the pauses are skipped, so
-// the attempts left fit in the shutdown budget.
+// revoke invalidates a user token in the background, so the redirect does
+// not wait for it. Revokes started before Drain are waited for on shutdown.
 func (s *Server) revoke(token string) {
+	run := func() {
+		ctx, cancel := detached()
+		defer cancel()
+		if err := s.OAuth.Revoke(ctx, token); err != nil {
+			slog.Warn("revoking the user token failed", "error", err)
+		}
+	}
 	s.revokeMu.Lock()
 	defer s.revokeMu.Unlock()
 	if s.draining {
-		// Too late to be waited for: one attempt, untracked.
-		go s.revokeOnce(token)
+		// Too late to be waited for, but still worth trying.
+		go run()
 		return
 	}
-	s.revokes.Go(func() { s.revokeOnce(token) })
+	s.revokes.Go(run)
 }
 
-func (s *Server) revokeOnce(token string) {
-	ctx, cancel := detached()
-	defer cancel()
-	for attempt := 0; ; attempt++ {
-		err := s.OAuth.Revoke(ctx, token)
-		if err == nil {
-			return
-		}
-		if !retryable(err) || attempt == len(s.revokeDelays) || ctx.Err() != nil {
-			slog.Warn("revoking the user token failed", "error", err, "attempts", attempt+1)
-			return
-		}
-		select {
-		case <-time.After(s.revokeDelays[attempt]):
-		case <-s.stopping:
-		case <-ctx.Done():
-		}
-	}
-}
-
-// retryable reports whether a failed GitHub call may succeed when tried
-// again: a transport error, a rate limit or a server error. A 4xx such as
-// a wrong client secret never will.
-func retryable(err error) bool {
-	status := githubapp.StatusOf(err)
-	return status == 0 || status == http.StatusTooManyRequests || status >= 500
-}
-
-// Drain ends the revoke pauses and waits for the revokes still running,
-// until ctx ends. It is for shutdown: revokes after it get one attempt.
+// Drain waits for the user token revokes still running, until ctx ends. It
+// is for shutdown: revokes started after it are not waited for.
 func (s *Server) Drain(ctx context.Context) {
 	s.revokeMu.Lock()
-	if !s.draining {
-		s.draining = true
-		close(s.stopping)
-	}
+	s.draining = true
 	s.revokeMu.Unlock()
 
 	done := make(chan struct{})

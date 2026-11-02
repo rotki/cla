@@ -67,15 +67,12 @@ type Server struct {
 	// nanoseconds; it keeps failing loads to one attempt per minute.
 	lastWarm atomic.Int64
 
-	// revokes tracks the user token revokes in flight. Drain sets draining
-	// and closes stopping, which cuts their pauses short; revokeMu orders
-	// new revokes against it, since a WaitGroup may not grow from zero
-	// while it is waited on.
-	revokes      sync.WaitGroup
-	revokeMu     sync.Mutex
-	draining     bool
-	stopping     chan struct{}
-	revokeDelays []time.Duration
+	// revokes tracks the user token revokes in flight. revokeMu orders new
+	// ones against Drain setting draining, since a WaitGroup may not grow
+	// from zero while it is waited on.
+	revokes  sync.WaitGroup
+	revokeMu sync.Mutex
+	draining bool
 }
 
 func New(d Deps) (*Server, error) {
@@ -85,10 +82,6 @@ func New(d Deps) (*Server, error) {
 		templates: map[string]*template.Template{},
 		limiter:   newLimiter(5, 10*time.Minute),
 		now:       time.Now,
-		stopping:  make(chan struct{}),
-		// Pauses between attempts to revoke a user token. An OAuth App's
-		// token never expires, so one failed call must not leave it valid.
-		revokeDelays: []time.Duration{time.Second, 5 * time.Second},
 	}
 	for _, page := range pages {
 		t, err := template.ParseFS(templateFS, "templates/layout.html", "templates/"+page+".html")

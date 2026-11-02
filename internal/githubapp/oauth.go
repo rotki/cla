@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,7 +26,18 @@ type OAuth struct {
 	GitHubURL    string
 	APIURL       string
 	HTTP         *http.Client
+	// RevokeDelays are the pauses between attempts to revoke a token; nil
+	// uses revokeDelays.
+	RevokeDelays []time.Duration
 }
+
+// loginScope is all the login asks for: FetchUser reads the account and its
+// email addresses.
+const loginScope = "user:email"
+
+// revokeDelays space the attempts to revoke a token. An OAuth App's token
+// never expires, so one failed call must not leave it valid.
+var revokeDelays = []time.Duration{time.Second, 5 * time.Second}
 
 // NewVerifier returns a PKCE code verifier and an OAuth state value.
 func NewVerifier() (verifier, state string) {
@@ -51,7 +63,7 @@ func (o *OAuth) AuthorizeURL(state, verifier string) string {
 		// A classic OAuth App asks for what the scope names, so the consent
 		// screen lists only email addresses. A GitHub App ignores it and
 		// lists its own permissions.
-		"scope": {"user:email"},
+		"scope": {loginScope},
 	}
 	return o.GitHubURL + "/login/oauth/authorize?" + q.Encode()
 }
@@ -97,15 +109,35 @@ func (o *OAuth) Exchange(ctx context.Context, code, verifier string) (string, er
 }
 
 // Revoke invalidates a user access token, so it is useless after the login
-// has read what it needs.
+// has read what it needs. Failures that may pass are tried again, until the
+// attempts run out or ctx ends.
 func (o *OAuth) Revoke(ctx context.Context, token string) error {
+	delays := o.RevokeDelays
+	if delays == nil {
+		delays = revokeDelays
+	}
+	for attempt := 0; ; attempt++ {
+		err := o.revoke(ctx, token)
+		if err == nil || !Transient(err) || attempt == len(delays) || ctx.Err() != nil {
+			return err
+		}
+		select {
+		case <-time.After(delays[attempt]):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
+func (o *OAuth) revoke(ctx context.Context, token string) error {
 	body, err := json.Marshal(map[string]string{"access_token": token})
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, o.APIURL+"/applications/"+o.ClientID+"/token", bytes.NewReader(body))
+	path := "/applications/" + o.ClientID + "/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, o.APIURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -121,10 +153,15 @@ func (o *OAuth) Revoke(ctx context.Context, token string) error {
 		return redactURL(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
-		return &APIError{Method: http.MethodDelete, Path: "/applications/" + o.ClientID + "/token", Status: resp.StatusCode}
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
 	}
-	return nil
+	apiErr := APIError{Method: http.MethodDelete, Path: path, Status: resp.StatusCode}
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	if retryAt, limited := rateLimited(resp, head, time.Now()); limited {
+		return &RateLimitError{APIError: apiErr, RetryAt: retryAt}
+	}
+	return &apiErr
 }
 
 // redactURL keeps request URLs out of transport errors.
@@ -144,8 +181,8 @@ type User struct {
 }
 
 // FetchUser returns the account and its verified email addresses, primary
-// first. It needs the user:email scope, or for a GitHub App the "email
-// addresses: read" account permission.
+// first. It needs loginScope, or for a GitHub App the "email addresses:
+// read" account permission.
 func FetchUser(ctx context.Context, c *Client) (User, []string, error) {
 	// The two calls are independent, so they go out together: a login
 	// waits for one round trip to GitHub, not two.

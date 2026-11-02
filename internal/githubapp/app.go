@@ -45,6 +45,18 @@ func StatusOf(err error) int {
 	return 0
 }
 
+// Transient reports whether a failed call may succeed when tried again soon:
+// a transport error (a timed out call included), a server error or a rate
+// limit. A 4xx such as a wrong client secret never will. Callers stop on
+// their own context.
+func Transient(err error) bool {
+	if _, limited := RetryAfter(err); limited {
+		return true
+	}
+	status := StatusOf(err)
+	return status == 0 || status >= 500
+}
+
 // IsStatus reports whether err is an APIError with the given status.
 func IsStatus(err error, status int) bool {
 	return StatusOf(err) == status

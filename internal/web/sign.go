@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rotki/cla/internal/alert"
@@ -79,17 +81,10 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusBadGateway, "GitHub did not accept the login. Please try again.")
 		return
 	}
-	// The token is used for these two calls only, then revoked: a GitHub App
-	// user token would otherwise stay valid for hours. The revoke does not
-	// hold up the redirect.
+	// The token is used for these two calls only, then revoked. The revoke
+	// does not hold up the redirect.
 	user, emails, err := githubapp.FetchUser(r.Context(), s.App.UserClient(token))
-	go func() {
-		ctx, cancel := detached()
-		defer cancel()
-		if revokeErr := s.OAuth.Revoke(ctx, token); revokeErr != nil {
-			slog.Warn("revoking the user token failed", "error", revokeErr)
-		}
-	}()
+	s.revoke(token)
 	if err != nil {
 		slog.Warn("fetching the user after login failed", "error", err)
 		s.fail(w, r, http.StatusBadGateway, "Could not read your GitHub account. Please try again.")
@@ -316,4 +311,75 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cookies.clear(w, sessionCookie)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// revoke invalidates a user token in the background, trying again on
+// failures that may pass. Once a drain has begun the pauses are skipped, so
+// the attempts left fit in the shutdown budget.
+func (s *Server) revoke(token string) {
+	s.revokeMu.Lock()
+	defer s.revokeMu.Unlock()
+	if s.draining {
+		// Too late to be waited for: one attempt, untracked.
+		go s.revokeOnce(token)
+		return
+	}
+	s.revokes.Go(func() { s.revokeOnce(token) })
+}
+
+func (s *Server) revokeOnce(token string) {
+	ctx, cancel := detached()
+	defer cancel()
+	for attempt := 0; ; attempt++ {
+		err := s.OAuth.Revoke(ctx, token)
+		if err == nil {
+			return
+		}
+		if !retryable(err) || attempt == len(s.revokeDelays) || ctx.Err() != nil {
+			slog.Warn("revoking the user token failed", "error", err, "attempts", attempt+1)
+			return
+		}
+		select {
+		case <-time.After(s.revokeDelays[attempt]):
+		case <-s.stopping:
+		case <-ctx.Done():
+		}
+	}
+}
+
+// retryable reports whether a failed GitHub call may succeed when tried
+// again: a transport error, a rate limit or a server error. A 4xx such as
+// a wrong client secret never will.
+func retryable(err error) bool {
+	status := githubapp.StatusOf(err)
+	return status == 0 || status == http.StatusTooManyRequests || status >= 500
+}
+
+// Drain ends the revoke pauses and waits for the revokes still running,
+// until ctx ends. It is for shutdown: revokes after it get one attempt.
+func (s *Server) Drain(ctx context.Context) {
+	s.revokeMu.Lock()
+	if !s.draining {
+		s.draining = true
+		close(s.stopping)
+	}
+	s.revokeMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.revokes.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+	}
+	// Both may be ready when ctx had already ended: only warn when a
+	// revoke is really still running.
+	select {
+	case <-done:
+	default:
+		slog.Warn("shutdown did not wait for every user token revoke")
+	}
 }

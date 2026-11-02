@@ -30,8 +30,8 @@ type Config struct {
 
 	AppID             int64
 	AppPrivateKey     *rsa.PrivateKey
-	AppClientID       string
-	AppClientSecret   string
+	LoginClientID     string
+	LoginClientSecret string
 	WebhookSecret     []byte
 	SessionKey        []byte
 	AgeRecipient      string
@@ -57,8 +57,6 @@ func Load() (*Config, error) {
 		DataDir:           envOr("DATA_DIR", "/data"),
 		BackupDir:         os.Getenv("BACKUP_DIR"),
 		StatusContext:     envOr("STATUS_CONTEXT", "license/cla"),
-		AppClientID:       os.Getenv("GITHUB_APP_CLIENT_ID"),
-		AppClientSecret:   os.Getenv("GITHUB_APP_CLIENT_SECRET"),
 		AgeRecipient:      strings.TrimSpace(os.Getenv("AGE_RECIPIENT")),
 		AgeKeyID:          os.Getenv("AGE_KEY_ID"),
 		DiscordWebhookURL: os.Getenv("DISCORD_WEBHOOK_URL"),
@@ -97,11 +95,8 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.AppClientSecret, err = Secret("GITHUB_APP_CLIENT_SECRET"); err != nil {
+	if cfg.LoginClientID, cfg.LoginClientSecret, err = loginClient(); err != nil {
 		return nil, err
-	}
-	if cfg.AppClientID == "" || cfg.AppClientSecret == "" {
-		return nil, errors.New("GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET (or _FILE) are required")
 	}
 
 	webhookSecret, err := Secret("GITHUB_WEBHOOK_SECRET")
@@ -173,6 +168,33 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loginClient returns the OAuth client the user login goes through. A
+// separate login app (GITHUB_LOGIN_CLIENT_*) that holds only the email
+// permission keeps GitHub's consent screen down to "email addresses"; the
+// GitHub App's own client (GITHUB_APP_CLIENT_*) is the fallback, so a deploy
+// keeps working before the login app exists. Both pairs are checked even
+// when the first is used, so a broken fallback shows at startup, not on a
+// rollback.
+func loginClient() (id, secret string, err error) {
+	for _, prefix := range []string{"GITHUB_LOGIN_CLIENT", "GITHUB_APP_CLIENT"} {
+		pairID := os.Getenv(prefix + "_ID")
+		var pairSecret string
+		if pairSecret, err = Secret(prefix + "_SECRET"); err != nil {
+			return "", "", err
+		}
+		if (pairID == "") != (pairSecret == "") {
+			return "", "", fmt.Errorf("%s_ID and %s_SECRET (or _FILE) must be set together", prefix, prefix)
+		}
+		if id == "" {
+			id, secret = pairID, pairSecret
+		}
+	}
+	if id != "" {
+		return id, secret, nil
+	}
+	return "", "", errors.New("GITHUB_LOGIN_CLIENT_ID and GITHUB_LOGIN_CLIENT_SECRET (or _FILE) are required; the GitHub App's GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET also work")
 }
 
 // maxSecretSize bounds what is read from a secret file; the largest secret,

@@ -1,8 +1,10 @@
 # A Kubernetes sketch for the CLA service: one Deployment, two volume
-# claims, a Service. Replace cla.example.org, <org>, <app id>, <client id>
+# claims, a Service. Replace cla.example.org, <org>, <app id>, <login client id>
 # and the age key, and create the cla Secret with the five files named
 # below. Not tried against a live cluster. docs/deploy.md explains the
-# choices; put your ingress controller's own rate limits in front.
+# choices; put your ingress controller's own rate limits in front. Coming
+# from the GitHub App's own login, the Secret's app-client-secret becomes
+# login-client-secret, holding the login app's secret.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -35,12 +37,12 @@ spec:
             - { name: BASE_URL, value: "https://cla.example.org" }
             - { name: GITHUB_ORG, value: "<org>" }
             - { name: GITHUB_APP_ID, value: "<app id>" }
-            - { name: GITHUB_APP_CLIENT_ID, value: "<client id>" }
+            - { name: GITHUB_LOGIN_CLIENT_ID, value: "<login client id>" }
             - { name: AGE_RECIPIENT, value: "age1..." }
             - { name: AGE_KEY_ID, value: "2026-01" }
             - { name: BACKUP_DIR, value: /backups }
             - { name: GITHUB_APP_PRIVATE_KEY_FILE, value: /run/secrets/cla/app-private-key }
-            - { name: GITHUB_APP_CLIENT_SECRET_FILE, value: /run/secrets/cla/app-client-secret }
+            - { name: GITHUB_LOGIN_CLIENT_SECRET_FILE, value: /run/secrets/cla/login-client-secret }
             - { name: GITHUB_WEBHOOK_SECRET_FILE, value: /run/secrets/cla/webhook-secret }
             - { name: SESSION_KEY_FILE, value: /run/secrets/cla/session-key }
             - { name: DISCORD_WEBHOOK_URL_FILE, value: /run/secrets/cla/discord-webhook-url }

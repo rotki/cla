@@ -15,7 +15,9 @@ import (
 	"time"
 )
 
-// OAuth is the App's user login flow (GitHub App user access tokens) with PKCE.
+// OAuth is the user login flow with PKCE. It works with a classic OAuth App
+// or a GitHub App's client: either way the login only reads the account and
+// its email addresses.
 type OAuth struct {
 	ClientID     string
 	ClientSecret string
@@ -46,6 +48,10 @@ func (o *OAuth) AuthorizeURL(state, verifier string) string {
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"code_challenge_method": {"S256"},
 		"allow_signup":          {"false"},
+		// A classic OAuth App asks for what the scope names, so the consent
+		// screen lists only email addresses. A GitHub App ignores it and
+		// lists its own permissions.
+		"scope": {"user:email"},
 	}
 	return o.GitHubURL + "/login/oauth/authorize?" + q.Encode()
 }
@@ -116,7 +122,7 @@ func (o *OAuth) Revoke(ctx context.Context, token string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("revoking the token: status %d", resp.StatusCode)
+		return &APIError{Method: http.MethodDelete, Path: "/applications/" + o.ClientID + "/token", Status: resp.StatusCode}
 	}
 	return nil
 }
@@ -138,7 +144,8 @@ type User struct {
 }
 
 // FetchUser returns the account and its verified email addresses, primary
-// first. It needs the App's "email addresses: read" account permission.
+// first. It needs the user:email scope, or for a GitHub App the "email
+// addresses: read" account permission.
 func FetchUser(ctx context.Context, c *Client) (User, []string, error) {
 	// The two calls are independent, so they go out together: a login
 	// waits for one round trip to GitHub, not two.

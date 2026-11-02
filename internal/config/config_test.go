@@ -38,11 +38,13 @@ func setBase(t *testing.T) {
 	t.Setenv("GITHUB_APP_PRIVATE_KEY", testKeyPEM(t))
 	t.Setenv("GITHUB_APP_CLIENT_ID", "Iv1.abc")
 	t.Setenv("GITHUB_APP_CLIENT_SECRET", "client-secret")
+	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "")
+	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET", "")
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "webhook-secret")
 	t.Setenv("SESSION_KEY", strings.Repeat("s", 32))
 	t.Setenv("AGE_RECIPIENT", "age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq")
 	t.Setenv("AGE_KEY_ID", "2026-01")
-	for _, name := range []string{"GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_CLIENT_SECRET", "GITHUB_WEBHOOK_SECRET", "SESSION_KEY", "DISCORD_WEBHOOK_URL"} {
+	for _, name := range []string{"GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_CLIENT_SECRET", "GITHUB_LOGIN_CLIENT_SECRET", "GITHUB_WEBHOOK_SECRET", "SESSION_KEY", "DISCORD_WEBHOOK_URL"} {
 		t.Setenv(name+"_FILE", "")
 	}
 }
@@ -53,7 +55,7 @@ func TestLoadFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BaseURL != "https://cla.rotki.com" || !cfg.SecureCookies || cfg.AppClientSecret != "client-secret" || string(cfg.WebhookSecret) != "webhook-secret" {
+	if cfg.BaseURL != "https://cla.rotki.com" || !cfg.SecureCookies || cfg.LoginClientID != "Iv1.abc" || cfg.LoginClientSecret != "client-secret" || string(cfg.WebhookSecret) != "webhook-secret" {
 		t.Fatalf("config %+v", cfg)
 	}
 	if cfg.Org != "rotki" || cfg.StatusContext != "license/cla" || cfg.Workers != 4 || !cfg.Comments || cfg.AnchorDiscord {
@@ -79,11 +81,71 @@ func TestLoadFromSecretFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AppClientSecret != "file-client-secret" || string(cfg.WebhookSecret) != "file-webhook-secret" {
-		t.Fatalf("trailing newlines kept: %q %q", cfg.AppClientSecret, cfg.WebhookSecret)
+	if cfg.LoginClientSecret != "file-client-secret" || string(cfg.WebhookSecret) != "file-webhook-secret" {
+		t.Fatalf("trailing newlines kept: %q %q", cfg.LoginClientSecret, cfg.WebhookSecret)
 	}
 	if string(cfg.SessionKey) != strings.Repeat("f", 40) || cfg.DiscordWebhookURL != "https://discord.com/api/webhooks/1/token" {
 		t.Fatalf("config %+v", cfg)
+	}
+}
+
+func TestLoginClient(t *testing.T) {
+	setBase(t)
+	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "Ov23login")
+	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET_FILE", writeFile(t, "login", "login-secret\n"))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LoginClientID != "Ov23login" || cfg.LoginClientSecret != "login-secret" {
+		t.Fatalf("login app not preferred: %q %q", cfg.LoginClientID, cfg.LoginClientSecret)
+	}
+
+	// The login app alone is enough: the GitHub App needs no client then.
+	t.Setenv("GITHUB_APP_CLIENT_ID", "")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "")
+	if _, err := Load(); err != nil {
+		t.Fatalf("login app without the App's client: %v", err)
+	}
+
+	// Half a login app is a mistake, not a reason to fall back.
+	t.Setenv("GITHUB_APP_CLIENT_ID", "Iv1.abc")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "client-secret")
+	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET_FILE", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_LOGIN_CLIENT_ID and GITHUB_LOGIN_CLIENT_SECRET") {
+		t.Fatalf("half-set login app: %v", err)
+	}
+
+	// Without a login app, the GitHub App's client is used.
+	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LoginClientID != "Iv1.abc" || cfg.LoginClientSecret != "client-secret" {
+		t.Fatalf("no fallback to the App's client: %q %q", cfg.LoginClientID, cfg.LoginClientSecret)
+	}
+
+	// A broken fallback is reported even while the login app is in use.
+	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "Ov23login")
+	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET", "login-secret")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET") {
+		t.Fatalf("half-set App client beside the login app: %v", err)
+	}
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "client-secret")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET_FILE", writeFile(t, "app", "other"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("App client secret set twice beside the login app: %v", err)
+	}
+
+	t.Setenv("GITHUB_APP_CLIENT_SECRET_FILE", "")
+	t.Setenv("GITHUB_LOGIN_CLIENT_ID", "")
+	t.Setenv("GITHUB_LOGIN_CLIENT_SECRET", "")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_LOGIN_CLIENT_ID") {
+		t.Fatalf("no login client: %v", err)
 	}
 }
 

@@ -65,8 +65,10 @@ type Server struct {
 	// Requests counts every call; Paths counts them by method and path.
 	Requests int
 	Paths    map[string]int
-	// Revoked counts user tokens revoked through the OAuth app API.
-	Revoked int
+	// Revoked counts user tokens revoked through the OAuth app API;
+	// RevokeFailures makes that many revokes fail first with a 502.
+	Revoked        int
+	RevokeFailures int
 	// Installed lists the repositories the installation covers; nil means
 	// all of them. Like GitHub, statuses on any other repository get a 403.
 	Installed []string
@@ -126,6 +128,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 201, map[string]string{"token": "ghs_installation", "expires_at": "2099-01-01T00:00:00Z"})
 
 	case r.Method == http.MethodDelete && strings.HasPrefix(p, "/applications/") && strings.HasSuffix(p, "/token"):
+		if s.RevokeFailures > 0 {
+			s.RevokeFailures--
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		s.Revoked++
 		w.WriteHeader(http.StatusNoContent)
 

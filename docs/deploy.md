@@ -37,12 +37,11 @@ here and below with the host the service runs on.
 
 | Setting | Value |
 |---|---|
-| Callback URL | `https://cla.example.org/oauth/callback` |
+| Callback URL | none: logins go through the login app below |
 | Request user authorization during installation | off |
 | Webhook URL | `https://cla.example.org/webhook`, with a secret |
 | Repository permissions | Commit statuses: read & write · Pull requests: read & write · Contents: read · Merge queues: read · Metadata: read |
 | Organization permissions | Members: read |
-| Account permissions | Email addresses: read |
 | Events | Pull request · Merge group (GitHub offers it only with Merge queues: read) |
 | Logo | rotki's is [`examples/app-icon.png`](../examples/app-icon.png) (source: `app-icon.svg`); GitHub shows it at about 20 px next to the status |
 
@@ -53,7 +52,32 @@ whenever repositories are added or removed. Private repositories are never check
 cla-assistant, so "All repositories" means every public one; a repository made public is
 checked from its next pull request event or listing. That includes outside collaborators
 you give access to a private repository: cover them with their contract, not this service.
-`excluded_repos` are never checked either. Generate a private key and a client secret.
+`excluded_repos` are never checked either. Generate a private key.
+
+### The login app
+
+Contributors and admins log in through a separate classic OAuth App that may only read their
+email addresses (`user:email`). GitHub's consent screen then asks for email addresses alone, as
+cla-assistant's did. Logging in through the GitHub App instead would show its repository and
+organization permissions and "act on your behalf", although the service only reads the account
+and revokes the token at once.
+
+Create it under the org's Settings, Developer settings, OAuth Apps:
+
+| Setting | Value |
+|---|---|
+| Application name | what contributors see on the consent screen, e.g. "<org> CLA" |
+| Homepage URL | `https://cla.example.org` |
+| Authorization callback URL | `https://cla.example.org/oauth/callback` |
+| Enable Device Flow | off |
+| Logo | the same as the App's |
+
+Generate a client secret. The service asks for the `user:email` scope itself.
+
+Without `GITHUB_LOGIN_CLIENT_ID` and `GITHUB_LOGIN_CLIENT_SECRET` the service falls back to the
+GitHub App's own client (`GITHUB_APP_CLIENT_*`). That works if the App has the Callback URL
+above and the "Email addresses: read" account permission, but contributors see the longer
+consent screen.
 
 ## 4. Configuration
 
@@ -71,8 +95,9 @@ is a startup error, and a trailing newline in the file is ignored.
 |---|---|---|---|
 | `BASE_URL` | yes | | `https://cla.example.org` |
 | `GITHUB_APP_ID` | yes | | |
-| `GITHUB_APP_CLIENT_ID` | yes | | for the user login |
-| 🔒 `GITHUB_APP_CLIENT_SECRET` | yes | | |
+| `GITHUB_LOGIN_CLIENT_ID` | yes¹ | | the login app, for the user login |
+| 🔒 `GITHUB_LOGIN_CLIENT_SECRET` | yes¹ | | |
+| `GITHUB_APP_CLIENT_ID`, 🔒 `GITHUB_APP_CLIENT_SECRET` | | | the GitHub App's client, used for the login only when the two above are unset |
 | 🔒 `GITHUB_APP_PRIVATE_KEY` | yes | | PEM |
 | 🔒 `GITHUB_WEBHOOK_SECRET` | yes | | |
 | 🔒 `SESSION_KEY` | yes | | at least 32 bytes, e.g. `openssl rand -base64 48` |
@@ -91,6 +116,10 @@ is a startup error, and a trailing newline in the file is ignored.
 | `WORKERS` | | `4` | |
 | `PORT` | | `4000` | |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` for more, `WARN` drops the access log |
+
+¹ Or the GitHub App's client instead, see [The login app](#the-login-app). Deployments set
+up before the login app keep working unchanged; the examples now name the secret
+`login-client-secret`, so rename it when moving to the login app.
 
 ### config.json
 

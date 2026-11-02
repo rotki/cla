@@ -1,6 +1,6 @@
 # A Docker Swarm stack for the CLA service behind Traefik. Replace
 # cla.example.org, the le certificate resolver, the public network, <org>,
-# <app id>, <client id>, the age key and the node name. Not tried against a
+# <app id>, <login client id>, the age key and the node name. Not tried against a
 # live Traefik yet. docs/deploy.md explains the choices.
 #
 #   docker stack deploy -c examples/compose.yml cla
@@ -12,19 +12,19 @@ services:
       BASE_URL: https://cla.example.org
       GITHUB_ORG: <org>
       GITHUB_APP_ID: "<app id>"
-      GITHUB_APP_CLIENT_ID: <client id>
+      GITHUB_LOGIN_CLIENT_ID: <login client id>
       AGE_RECIPIENT: age1...
       AGE_KEY_ID: "2026-01"
       BACKUP_DIR: /backups
       # Secrets as files, never as plain variables.
       GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/cla_app_private_key
-      GITHUB_APP_CLIENT_SECRET_FILE: /run/secrets/cla_app_client_secret
+      GITHUB_LOGIN_CLIENT_SECRET_FILE: /run/secrets/cla_login_client_secret
       GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/cla_webhook_secret
       SESSION_KEY_FILE: /run/secrets/cla_session_key
       DISCORD_WEBHOOK_URL_FILE: /run/secrets/cla_discord_webhook_url
     secrets:
       - cla_app_private_key
-      - cla_app_client_secret
+      - cla_login_client_secret
       - cla_webhook_secret
       - cla_session_key
       - cla_discord_webhook_url
@@ -139,7 +139,7 @@ networks:
 secrets:
   cla_app_private_key:
     external: true
-  cla_app_client_secret:
+  cla_login_client_secret:
     external: true
   cla_webhook_secret:
     external: true

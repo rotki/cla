@@ -121,8 +121,8 @@ func run() error {
 	site, err := web.New(web.Deps{
 		App: app,
 		OAuth: &githubapp.OAuth{
-			ClientID:     cfg.AppClientID,
-			ClientSecret: cfg.AppClientSecret,
+			ClientID:     cfg.LoginClientID,
+			ClientSecret: cfg.LoginClientSecret,
 			RedirectURL:  cfg.BaseURL + "/oauth/callback",
 			GitHubURL:    cfg.GitHubURL,
 			APIURL:       cfg.GitHubAPIURL,
@@ -159,7 +159,7 @@ func run() error {
 	// already answers meanwhile (health, and 503 on /ready).
 	go serve(server, serverErr)
 	if err := waitForStore(ctx, st, alerts); err != nil {
-		return shutdown(server, err)
+		return shutdown(server, site, err)
 	}
 	if err := agreement.Warm(ctx, st.Config()); err != nil {
 		slog.Error("loading the CLA text failed", "error", err)
@@ -191,7 +191,7 @@ func run() error {
 		stop()
 	}
 
-	err = shutdown(server, err)
+	err = shutdown(server, site, err)
 	wg.Wait()
 	stopAlerts()
 	<-alertsDone
@@ -211,12 +211,14 @@ func serve(server *http.Server, errs chan<- error) {
 // period docs/deploy.md asks Swarm for.
 const shutdownTime = 20 * time.Second
 
-func shutdown(server *http.Server, err error) error {
+func shutdown(server *http.Server, site *web.Server, err error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTime)
 	defer cancel()
 	if shutdownErr := server.Shutdown(ctx); shutdownErr != nil {
 		slog.Error("HTTP server shutdown error", "error", shutdownErr)
 	}
+	// A login that just finished may still be revoking its token.
+	site.Drain(ctx)
 	return err
 }
 

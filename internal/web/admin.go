@@ -58,6 +58,7 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 		LastRecheck: last,
 		Running:     running,
 		QueueDepth:  s.Queue.Depth(),
+		Quota:       s.quotaRows(),
 		Notice:      recheckNotices[r.URL.Query().Get("recheck")],
 	}
 	if !last.IsZero() {
@@ -85,7 +86,27 @@ type adminData struct {
 	Running     bool
 	CanRecheck  bool
 	QueueDepth  int
+	Quota       []quotaRow
 	Notice      string
+}
+
+// quotaRow is one GitHub rate limit as the admin page shows it.
+type quotaRow struct {
+	Resource string
+	githubapp.Quota
+}
+
+// quotaRows lists the GitHub quota by resource, as last reported by GitHub.
+func (s *Server) quotaRows() []quotaRow {
+	if s.Limits == nil {
+		return nil
+	}
+	var rows []quotaRow
+	for name, q := range s.Limits.Snapshot() {
+		rows = append(rows, quotaRow{Resource: name, Quota: q})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Resource < rows[j].Resource })
+	return rows
 }
 
 // recheckNotices are the only messages the ?recheck= parameter can show.

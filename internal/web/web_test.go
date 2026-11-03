@@ -493,6 +493,19 @@ func TestPublicPagesMakeNoGitHubCalls(t *testing.T) {
 	}
 }
 
+func TestPublicEndpointsDiscloseLittle(t *testing.T) {
+	h := newHarness(t)
+	_, body := h.get(t, "/ready")
+	if strings.TrimSpace(body) != `{"store_ready":true}` {
+		t.Fatalf("/ready says more than whether it is ready: %s", body)
+	}
+	for path, want := range map[string]int{"/static/": http.StatusNotFound, "/static/style.css": http.StatusOK} {
+		if resp, _ := h.get(t, path); resp.StatusCode != want {
+			t.Fatalf("%s: %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+}
+
 func TestUnchangedRecheckWritesNothing(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -876,6 +889,9 @@ func TestAdminRecheckIsLimitedToOncePerTenMinutes(t *testing.T) {
 	_, body := h.get(t, "/admin")
 	if !strings.Contains(body, "No manual re-check since the service started") {
 		t.Fatalf("admin page:\n%s", body)
+	}
+	if !strings.Contains(body, "core 4990 of 5000, resets 00:00 UTC") {
+		t.Fatalf("admin page without the GitHub quota:\n%s", body)
 	}
 	csrf := csrfFrom(t, body)
 

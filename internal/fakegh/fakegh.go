@@ -117,6 +117,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	s.Requests++
 	s.Paths[r.Method+" "+p]++
+	// Like GitHub, every answer reports the caller's quota.
+	w.Header().Set("X-RateLimit-Limit", "5000")
+	w.Header().Set("X-RateLimit-Remaining", "4990")
+	w.Header().Set("X-RateLimit-Reset", "4102444800")
 	switch {
 	case r.Method == http.MethodGet && p == "/app":
 		writeJSON(w, 200, map[string]string{"slug": strings.TrimSuffix(s.BotLogin, "[bot]")})

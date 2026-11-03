@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,7 +98,7 @@ func New(d Deps) (*Server, error) {
 func (s *Server) Handler(webhook http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(staticFS, "static")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", noListing(http.FileServerFS(static))))
 	mux.Handle("POST /webhook", webhook)
 	mux.HandleFunc("GET /theme.css", s.theme)
 	mux.HandleFunc("GET /logo", s.logo)
@@ -230,27 +231,18 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// ready reports whether the store is loaded, plus the numbers worth watching:
-// the remaining GitHub quota and how much work is waiting. It leaves out the
-// store's head, which would reveal when someone signs.
+// ready reports whether the store is loaded, and nothing else: it is public,
+// since the deploy checks it from outside. The quota and the queue depth are
+// on the admin page.
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
-	_, claLoaded := s.Agreement.Cached(s.Store.Config())
+	ready := s.Store.Ready()
 	status := http.StatusOK
-	if !s.Store.Ready() {
+	if !ready {
 		status = http.StatusServiceUnavailable
-	}
-	var quota map[string]githubapp.Quota
-	if s.Limits != nil {
-		quota = s.Limits.Snapshot()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"store_ready": s.Store.Ready(),
-		"cla_loaded":  claLoaded,
-		"queue_depth": s.Queue.Depth(),
-		"rate_limits": quota,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]bool{"store_ready": ready})
 }
 
 // claText returns the cached agreement. When it is missing, a background load
@@ -388,4 +380,15 @@ func (l *limiter) forget(now time.Time) {
 
 func detached() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
+}
+
+// noListing serves files only: a directory answers 404 instead of a listing.
+func noListing(files http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
 }

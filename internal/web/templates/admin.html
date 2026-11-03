@@ -56,5 +56,8 @@
     {{if .Data.QueueDepth}}Checks waiting: {{.Data.QueueDepth}}.{{end}}
     At most one re-check every 10 minutes.
   </p>
+  {{with .Data.Quota}}<p class="meta">GitHub quota left:
+    {{range $i, $q := .}}{{if $i}}; {{end}}{{$q.Resource}} {{$q.Remaining}} of {{$q.Limit}}, resets {{$q.Reset.UTC.Format "15:04"}} UTC{{end}}.
+  </p>{{end}}
 </section>
 {{end}}

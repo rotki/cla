@@ -53,6 +53,22 @@ var titles = map[Kind]string{
 	NotInstalled:   "GitHub refused the App an installation token: it was uninstalled from the organization or the installation is suspended. Nothing can be checked until it is installed again",
 }
 
+// recovered says what works again, so a recovery does not read like the
+// failure it ends.
+var recovered = map[Kind]string{
+	CheckFailed:    "CLA checks pass again",
+	StoreRead:      "The signatures data directory can be read again",
+	StoreWrite:     "The signatures data directory can be written again",
+	BadSignature:   "Webhooks arrive with valid signatures again",
+	ReconcileError: "The reconcile sweep runs again",
+	RateLimited:    "The GitHub rate limit has reset, deferred work is running",
+	BackupFailed:   "Backups are written again",
+	BackupProblems: "The latest backup passed verification",
+	AuditBroken:    "The audit log chain verifies again, anchors are published",
+	NoAccess:       "The App has access to every repository it checks again",
+	NotInstalled:   "GitHub issues the App installation tokens again",
+}
+
 // ForError picks the alert for a GitHub error and fills d with what it may
 // say about it: the request in words and the status. The App missing from
 // the organization and no access to a repository get their own alerts;
@@ -197,9 +213,12 @@ func (n *Notifier) Resolve(kind Kind) {
 	delete(n.kinds, kind)
 	n.mu.Unlock()
 
-	msg := fmt.Sprintf("**Recovered:** %s", titles[kind])
-	if suppressed > 0 {
-		msg += fmt.Sprintf(" (%d more failures since the last message)", suppressed)
+	msg := fmt.Sprintf("**Recovered:** %s", recovered[kind])
+	switch {
+	case suppressed == 1:
+		msg += " (it failed once more after the last alert)"
+	case suppressed > 1:
+		msg += fmt.Sprintf(" (it failed %d more times after the last alert)", suppressed)
 	}
 	n.deliver(msg)
 }

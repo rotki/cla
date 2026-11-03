@@ -109,6 +109,12 @@ const (
 	maxAttempts = 6
 )
 
+// quietAttempts is how many times in a row a pull request may fail on a
+// transient GitHub error (a 5xx, a timeout) before it is alerted on. With the
+// backoff above the alert goes out once it has kept failing for about three
+// minutes; a blip that clears before then is only logged.
+const quietAttempts = 2
+
 // running is a pull request being checked, with work that arrived meanwhile.
 type running struct {
 	again   bool
@@ -333,6 +339,10 @@ func (q *Queue) report(err error, job Job) {
 		q.retryAt(job, retryAt)
 		return
 	}
+	if githubapp.Transient(err) && q.retryAt(job, time.Now()) <= quietAttempts {
+		slog.Warn("check failed, retrying", "pr", ref.String(), "call", githubapp.Call(err), "error", err)
+		return
+	}
 	slog.Error("check failed", "pr", ref.String(), "call", githubapp.Call(err), "error", err)
 	q.mu.Lock()
 	q.failing[key] = true
@@ -417,13 +427,14 @@ func backoff(attempt int) time.Duration {
 // retryAt queues job again once the limit has reset. One timer per pull
 // request or merge queue commit: GitHub does not deliver a webhook twice,
 // and the sweep finds only pull requests, so a merge queue commit gets its
-// status from these retries or not at all.
-func (q *Queue) retryAt(job Job, at time.Time) {
+// status from these retries or not at all. It returns how many times in a row
+// the job has now been put off, more than maxAttempts once it gave up.
+func (q *Queue) retryAt(job Job, at time.Time) int {
 	key := job.key()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, ok := q.scheduled[key]; ok {
-		return
+		return q.attempts[key]
 	}
 	q.attempts[key]++
 	n := q.attempts[key]
@@ -431,7 +442,7 @@ func (q *Queue) retryAt(job Job, at time.Time) {
 		delete(q.attempts, key)
 		delete(q.limited, key)
 		slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
-		return
+		return n
 	}
 	delay := max(time.Until(at), backoff(n))
 	// Up to 20% jitter, so retries scheduled for the same reset do not all
@@ -445,4 +456,5 @@ func (q *Queue) retryAt(job Job, at time.Time) {
 		q.mu.Unlock()
 		q.Enqueue(retry)
 	})
+	return n
 }

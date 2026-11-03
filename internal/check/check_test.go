@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rotki/cla/internal/alert"
+	"github.com/rotki/cla/internal/githubapp"
 	"github.com/rotki/cla/internal/store"
 )
 
@@ -245,6 +247,45 @@ func TestBackoffDoubles(t *testing.T) {
 		if got := backoff(i + 1); got != w {
 			t.Errorf("backoff(%d) = %v, want %v", i+1, got, w)
 		}
+	}
+}
+
+func TestTransientFailuresAlertOnlyWhenTheyLast(t *testing.T) {
+	q := NewQueue(nil, alert.New(""), nil, 10)
+	job := Job{Ref: Ref{Repo: "r", Number: 1}}
+	unavailable := &githubapp.APIError{Method: "POST", Path: "/graphql", Status: 503}
+	// fire stands in for the retry timer going off.
+	fire := func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		for key, timer := range q.scheduled {
+			timer.Stop()
+			delete(q.scheduled, key)
+		}
+	}
+	defer fire()
+
+	for i := range quietAttempts {
+		q.report(unavailable, job)
+		if q.failing[job.key()] || q.scheduled[job.key()] == nil {
+			t.Fatalf("failure %d: failing %v, retry scheduled %v", i+1, q.failing, q.scheduled)
+		}
+		fire()
+	}
+	q.report(unavailable, job)
+	if !q.failing[job.key()] || q.scheduled[job.key()] == nil {
+		t.Fatalf("a lasting failure: failing %v, retry scheduled %v", q.failing, q.scheduled)
+	}
+	fire()
+	q.report(nil, job)
+	if len(q.failing) != 0 || len(q.attempts) != 0 {
+		t.Fatalf("a success left failing %v, attempts %v", q.failing, q.attempts)
+	}
+
+	// A failure that retrying cannot fix alerts at once, without a retry.
+	q.report(&githubapp.APIError{Method: "GET", Path: "/repos/r", Status: 422}, job)
+	if !q.failing[job.key()] || len(q.scheduled) != 0 {
+		t.Fatalf("a lasting error: failing %v, retry scheduled %v", q.failing, q.scheduled)
 	}
 }
 

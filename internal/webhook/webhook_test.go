@@ -40,7 +40,7 @@ func deliver(h http.Handler, event, delivery, body, signature string) int {
 
 func newHandler() (*Handler, *fakeQueue) {
 	q := &fakeQueue{}
-	return New(secret, func() int64 { return 42 }, q, alert.New(""), nil), q
+	return New(secret, func() int64 { return 42 }, q, alert.New(""), nil, nil), q
 }
 
 func TestValid(t *testing.T) {

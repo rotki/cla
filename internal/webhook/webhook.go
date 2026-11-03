@@ -35,6 +35,7 @@ type Handler struct {
 	installationID func() int64
 	queue          Queue
 	alerts         *alert.Notifier
+	sources        *Sources
 	reposChanged   func(added []string)
 
 	mu         sync.Mutex
@@ -45,13 +46,15 @@ type Handler struct {
 // New returns the webhook handler. reposChanged is called when repositories
 // are added to or removed from the installation, with the added ones, so the
 // list of repositories to check is updated and their open pull requests get
-// checked.
-func New(secret []byte, installationID func() int64, queue Queue, alerts *alert.Notifier, reposChanged func(added []string)) *Handler {
+// checked. A bad signature alerts only from inside sources; nil sources
+// alerts on every one.
+func New(secret []byte, installationID func() int64, queue Queue, alerts *alert.Notifier, sources *Sources, reposChanged func(added []string)) *Handler {
 	return &Handler{
 		secret:         secret,
 		installationID: installationID,
 		queue:          queue,
 		alerts:         alerts,
+		sources:        sources,
 		reposChanged:   reposChanged,
 		deliveries:     map[string]bool{},
 	}
@@ -109,7 +112,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !Valid(h.secret, payload, r.Header.Get("X-Hub-Signature-256")) {
 		// Not resolved by a valid delivery: that would let anyone re-trigger
 		// the alert after every real webhook. The hourly window closes it.
-		h.alerts.Report(alert.BadSignature, alert.Detail{})
+		if h.sources.fromGitHub(r) {
+			h.alerts.Report(alert.BadSignature, alert.Detail{})
+		} else {
+			slog.Info("webhook with an invalid signature from outside GitHub's ranges rejected")
+			h.sources.markStale()
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

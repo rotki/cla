@@ -102,7 +102,8 @@ func run() error {
 		slog.Warn("audit anchors never leave this host, which can rewrite them with the log: set BACKUP_DIR and ship the archives, or AUDIT_ANCHOR_DISCORD")
 	}
 	st := store.New(cfg.DataDir)
-	agreement := store.NewAgreement(githubapp.NewPublicClient(cfg.GitHubAPIURL))
+	public := githubapp.NewPublicClient(cfg.GitHubAPIURL)
+	agreement := store.NewAgreement(public)
 	directory := org.New(gh, cfg.Org)
 	checker := check.NewChecker(gh, st, directory, check.Options{
 		Owner:         cfg.Org,
@@ -118,7 +119,8 @@ func run() error {
 	queue := check.NewQueue(checker, alerts, app.Limits, 1000)
 	sweeper := reconcile.New(gh, st, agreement, checker, queue, alerts, app.Limits, cfg.Org)
 
-	hook := webhook.New(cfg.WebhookSecret, app.InstallationID, queue, alerts, func(added []string) {
+	sources := webhook.NewSources()
+	hook := webhook.New(cfg.WebhookSecret, app.InstallationID, queue, alerts, sources, func(added []string) {
 		sweeper.ReposChanged(ctx, added)
 	})
 
@@ -181,6 +183,7 @@ func run() error {
 	var wg sync.WaitGroup
 	wg.Go(func() { queue.Run(ctx, cfg.Workers) })
 	wg.Go(func() { sweeper.Run(ctx, cfg.ReconcileInterval) })
+	wg.Go(func() { sources.Run(ctx, public, 24*time.Hour) })
 	wg.Go(func() { anchor(ctx, st, alerts, cfg.AnchorInterval, cfg.AnchorDiscord, cfg.BackupDir) })
 	if cfg.BackupDir != "" {
 		wg.Go(func() { backups(ctx, cfg.DataDir, cfg.BackupDir, cfg.BackupInterval, cfg.BackupKeep, alerts) })

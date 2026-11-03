@@ -1,0 +1,132 @@
+package webhook
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/netip"
+	"sync"
+	"time"
+
+	"github.com/rotki/cla/internal/githubapp"
+)
+
+// Sources holds the address ranges GitHub sends webhooks from, as its /meta
+// endpoint lists them under "hooks". A delivery with a bad signature from
+// inside them points at a webhook secret that no longer matches the App's;
+// from anywhere else it is someone probing the endpoint, not worth an alert.
+//
+// GitHub sets no lifetime for the list and changes it now and then, asking
+// those who use it to keep watching /meta. Run refreshes it daily, keeps the
+// last good list when a refresh fails, and refreshes early when a bad
+// signature arrives from outside it, in case GitHub added a range since.
+type Sources struct {
+	mu       sync.RWMutex
+	prefixes []netip.Prefix
+	// stale asks Run for an early refresh.
+	stale chan struct{}
+}
+
+func NewSources() *Sources {
+	return &Sources{stale: make(chan struct{}, 1)}
+}
+
+// Refresh loads the ranges from GitHub's /meta endpoint. On failure the
+// ranges loaded before are kept.
+func (s *Sources) Refresh(ctx context.Context, c *githubapp.Client) error {
+	var meta struct {
+		Hooks []string `json:"hooks"`
+	}
+	if _, err := c.Do(ctx, http.MethodGet, "/meta", nil, &meta); err != nil {
+		return err
+	}
+	var prefixes []netip.Prefix
+	for _, h := range meta.Hooks {
+		if p, err := netip.ParsePrefix(h); err == nil {
+			prefixes = append(prefixes, p)
+		}
+	}
+	if len(prefixes) == 0 {
+		return errors.New("GitHub's /meta lists no webhook ranges")
+	}
+	s.mu.Lock()
+	s.prefixes = prefixes
+	s.mu.Unlock()
+	return nil
+}
+
+// sourcesRetry is how soon a failed refresh is tried again; sourcesMinAge how
+// long after the last refresh an early one may follow, so anyone posting junk
+// from elsewhere cannot make the service call /meta more than once an hour.
+const (
+	sourcesRetry  = 15 * time.Minute
+	sourcesMinAge = time.Hour
+)
+
+// Run refreshes the ranges now and then every interval until ctx is done.
+func (s *Sources) Run(ctx context.Context, c *githubapp.Client, interval time.Duration) {
+	for {
+		wait := interval
+		last := time.Now()
+		if err := s.Refresh(ctx, c); err != nil {
+			slog.Warn("loading GitHub's webhook ranges failed", "error", err)
+			wait = sourcesRetry
+		}
+		timer := time.NewTimer(wait)
+		for waiting := true; waiting; {
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				waiting = false
+			case <-s.stale:
+				waiting = time.Since(last) < sourcesMinAge
+			}
+		}
+		timer.Stop()
+	}
+}
+
+// markStale asks Run for an early refresh without waiting on it.
+func (s *Sources) markStale() {
+	if s == nil {
+		return
+	}
+	select {
+	case s.stale <- struct{}{}:
+	default:
+	}
+}
+
+// fromGitHub reports whether r comes from GitHub's webhook ranges. Until the
+// ranges are loaded every request counts as GitHub's, so a secret that does
+// not match is never missed. The client is X-Real-Ip, which the proxy in
+// front sets, or the peer address, as in the access log.
+func (s *Sources) fromGitHub(r *http.Request) bool {
+	if s == nil {
+		return true
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.prefixes) == 0 {
+		return true
+	}
+	remote := r.Header.Get("X-Real-Ip")
+	if remote == "" {
+		remote, _, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+	addr, err := netip.ParseAddr(remote)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range s.prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}

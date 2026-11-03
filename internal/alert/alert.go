@@ -44,7 +44,7 @@ var titles = map[Kind]string{
 	CheckFailed:    "CLA check failed",
 	StoreRead:      "Reading the signatures data directory failed",
 	StoreWrite:     "Writing to the signatures data directory failed",
-	BadSignature:   "Webhook with an invalid signature rejected",
+	BadSignature:   "Webhook from GitHub with an invalid signature rejected: the webhook secret may not match the App's",
 	ReconcileError: "Reconcile sweep failed",
 	RateLimited:    "GitHub rate limit reached, work deferred until it resets",
 	BackupFailed:   "Backup of the signatures failed or was skipped, retrying",

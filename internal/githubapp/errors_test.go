@@ -2,6 +2,7 @@ package githubapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +111,38 @@ func TestTransient(t *testing.T) {
 		srv.Close()
 		if err == nil || Transient(err) != cut {
 			t.Errorf("body %q: Transient(%v) = %v, want %v", body, err, !cut, cut)
+		}
+	}
+
+	// Any read failure that is not a whole, undecodable body counts, an
+	// HTTP/2 stream reset included.
+	if !Transient(readFailed(errors.New("stream error: stream ID 3; INTERNAL_ERROR"))) {
+		t.Error("a reset stream is not transient")
+	}
+
+	// A certificate that fails verification is not a blip.
+	tlsSrv := httptest.NewTLSServer(http.NotFoundHandler())
+	_, err = NewPublicClient(tlsSrv.URL).Do(context.Background(), http.MethodGet, "/meta", nil, nil)
+	tlsSrv.Close()
+	if err == nil || Transient(err) {
+		t.Errorf("an untrusted certificate: Transient(%v) = true", err)
+	}
+}
+
+func TestGraphQLErrorsTellRejectedQueriesFromBlips(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"errors":[{"message":"Something went wrong while executing your query."}]}`:               true,
+		`{"errors":[{"message":"Field 'x' doesn't exist","extensions":{"code":"undefinedField"}}]}`: false,
+		`{"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`:           false,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		var out map[string]any
+		err := NewPublicClient(srv.URL).GraphQL(context.Background(), "query{x}", nil, &out)
+		srv.Close()
+		if err == nil || Transient(err) != want {
+			t.Errorf("%s: Transient(%v) = %v, want %v", body, err, !want, want)
 		}
 	}
 }

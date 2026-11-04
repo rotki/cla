@@ -309,6 +309,41 @@ func TestTransientFailuresAlertOnlyWhenTheyLast(t *testing.T) {
 	}
 }
 
+func TestGivingUpOnBlipsKeepsTheCount(t *testing.T) {
+	q := NewQueue(nil, alert.New(""), nil, 10)
+	job := Job{Ref: Ref{Repo: "r", Number: 1}}
+	unavailable := &githubapp.APIError{Method: "POST", Path: "/graphql", Status: 503}
+	fire := func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		for key, timer := range q.scheduled {
+			timer.Stop()
+			delete(q.scheduled, key)
+		}
+	}
+	defer fire()
+
+	for range maxAttempts + 1 {
+		q.report(unavailable, job)
+		fire()
+	}
+	if len(q.scheduled) != 0 || !q.failing[job.key()] {
+		t.Fatalf("after giving up: scheduled %v, failing %v", q.scheduled, q.failing)
+	}
+	// The next sweep's failure alerts, without another round of quiet retries.
+	q.mu.Lock()
+	delete(q.failing, job.key())
+	q.mu.Unlock()
+	q.report(unavailable, job)
+	if !q.failing[job.key()] || len(q.scheduled) != 0 {
+		t.Fatalf("a failure after giving up: failing %v, scheduled %v", q.failing, q.scheduled)
+	}
+	q.report(nil, job)
+	if len(q.transient) != 0 {
+		t.Fatalf("a success left the count %v", q.transient)
+	}
+}
+
 func TestCommentNeutralisesNamesAndStaysSmall(t *testing.T) {
 	var res Result
 	res.Unlinked = append(res.Unlinked, Author{Name: "Sign at https://evil.example `x` [click](https://evil.example)"})

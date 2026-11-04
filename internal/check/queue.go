@@ -447,21 +447,23 @@ func backoff(attempt int) time.Duration {
 // and the sweep finds only pull requests, so a merge queue commit gets its
 // status from these retries or not at all.
 func (q *Queue) retryAt(job Job, at time.Time) {
-	q.retry(job, q.attempts, at)
+	q.retry(job, q.attempts, at, false)
 }
 
 // retryTransient queues job again after a transient failure and returns how
-// many such failures in a row it has seen, counted in q.transient.
+// many such failures in a row it has seen, counted in q.transient. The count
+// outlives giving up: a pull request that failed for an hour alerts on its
+// next failure instead of being retried quietly again.
 func (q *Queue) retryTransient(job Job) int {
-	return q.retry(job, q.transient, time.Now())
+	return q.retry(job, q.transient, time.Now(), true)
 }
 
 // retry counts one more failure of job in counts and queues it again after
 // the backoff for that count, and no sooner than at. A failure while a retry
 // is already waiting is not counted: the retry decides. After maxAttempts the
-// pull request is left to a later sweep and its count starts over. It
-// returns the count, more than maxAttempts when it gave up.
-func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time) int {
+// pull request is left to a later sweep, and its count starts over unless
+// keep is set. It returns the count, more than maxAttempts when it gave up.
+func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time, keep bool) int {
 	key := job.key()
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -471,9 +473,13 @@ func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time) int {
 	counts[key]++
 	n := counts[key]
 	if n > maxAttempts {
-		delete(counts, key)
+		if n == maxAttempts+1 {
+			slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
+		}
+		if !keep {
+			delete(counts, key)
+		}
 		delete(q.limited, key)
-		slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
 		return n
 	}
 	q.schedule(job, max(time.Until(at), backoff(n)))

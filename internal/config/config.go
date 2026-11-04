@@ -78,6 +78,15 @@ func Load() (*Config, error) {
 	}
 	cfg.SecureCookies = base.Scheme == "https"
 
+	// Checked here, since a call to a malformed address fails like a network
+	// blip and would only be retried.
+	for name, raw := range map[string]string{"GITHUB_API_URL": cfg.GitHubAPIURL, "GITHUB_URL": cfg.GitHubURL} {
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return nil, fmt.Errorf("%s must be an http or https URL, got %q", name, raw)
+		}
+	}
+
 	appID, err := strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64)
 	if err != nil || appID <= 0 {
 		return nil, errors.New("GITHUB_APP_ID is required")

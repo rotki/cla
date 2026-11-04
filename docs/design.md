@@ -96,8 +96,8 @@ waited for the reset. Here:
   the re-checks after a signing or an admin's decision, so pushes cannot use up what a signer
   waits on.
 - A pull request already checked at its head commit, with the same signatures and exempt
-  team, is skipped without a single write. `/ready` shows the remaining quota and the queue
-  depth.
+  team, is skipped without a single write. The admin page shows the remaining quota and the
+  queue depth; the public `/ready` only says whether the signatures are loaded.
 
 ## Security model
 

@@ -108,6 +108,7 @@ type Limits struct {
 	// failure holds again for twice as long.
 	failures     int
 	firstFailure time.Time
+	heldAt       time.Time
 	heldUntil    time.Time
 	probeUntil   time.Time
 	hold         time.Duration
@@ -173,11 +174,17 @@ func (l *Limits) OnOutage(hold func(status int), recovered func()) {
 	l.onHold, l.onRecover = hold, recovered
 }
 
-// answered notes how GitHub answered a call: status, or 0 for no answer.
-// A server error or no answer counts towards a hold, anything else ends one.
-func (l *Limits) answered(status int) {
+// answered notes how GitHub answered a call sent at sent: status, or 0 for
+// no answer. A server error or no answer counts towards a hold, anything
+// else ends one. An answer to a call sent before the hold began says nothing
+// about whether GitHub recovered since, and is ignored.
+func (l *Limits) answered(status int, sent time.Time) {
 	failed := status == 0 || status >= 500
 	l.mu.Lock()
+	if l.hold > 0 && sent.Before(l.heldAt) {
+		l.mu.Unlock()
+		return
+	}
 	var hold func(int)
 	var recovered func()
 	now := l.now()
@@ -191,14 +198,14 @@ func (l *Limits) answered(status int) {
 		l.failures++
 		if (l.hold > 0 || l.failures >= holdAfter) && !l.heldUntil.After(now) {
 			l.hold = min(max(2*l.hold, holdMin), holdMax)
-			l.heldUntil = now.Add(l.hold)
+			l.heldAt, l.heldUntil = now, now.Add(l.hold)
 			hold = l.onHold
 		}
 	} else {
 		if l.hold > 0 {
 			recovered = l.onRecover
 		}
-		l.failures, l.hold = 0, 0
+		l.failures, l.hold, l.heldUntil = 0, 0, time.Time{}
 	}
 	l.mu.Unlock()
 	if hold != nil {
@@ -209,18 +216,27 @@ func (l *Limits) answered(status int) {
 	}
 }
 
-// failed notes a call that failed before or without an answer GitHub's
-// limits saw, such as minting the installation token: no answer or a server
-// error counts towards a hold. A call cut short by its caller says nothing
-// about GitHub.
-func (l *Limits) failed(err error) {
+// failed notes a call sent at sent that failed before or without an answer
+// GitHub's limits saw, such as minting the installation token, for answered
+// to classify: no answer, or the status GitHub answered with. A call cut
+// short by its caller says nothing about GitHub.
+func (l *Limits) failed(err error, sent time.Time) {
 	var terr *transportError
 	switch {
 	case errors.As(err, &terr) && !errors.Is(err, context.Canceled):
-		l.answered(0)
-	case StatusOf(err) >= 500:
-		l.answered(StatusOf(err))
+		l.answered(0, sent)
+	case StatusOf(err) != 0:
+		l.answered(StatusOf(err), sent)
 	}
+}
+
+// Outage reports whether GitHub is in an outage, from the first hold until a
+// call gets an answer again, and until when calls are held. Unlike Held it
+// hands out no probe.
+func (l *Limits) Outage() (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.heldUntil, l.hold > 0
 }
 
 // Held reports whether a call must be held back because GitHub keeps

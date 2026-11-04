@@ -2,7 +2,11 @@ package check
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +359,43 @@ func TestHeldCallsWaitWithoutAlerting(t *testing.T) {
 		t.Fatalf("a held call: scheduled %v, limited %v, failing %v, transient %v, attempts %v", q.scheduled, q.limited, q.failing, q.transient, q.attempts)
 	}
 	q.scheduled[job.key()].Stop()
+}
+
+func TestAFailedProbeWaitsOnTheHold(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer gh.Close()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := githubapp.New(1, key, gh.URL)
+	client := app.Client(githubapp.Scope{})
+	for range 5 {
+		_, _ = client.Do(context.Background(), http.MethodGet, "/repos/o/r", nil, nil)
+	}
+	if _, outage := app.Limits.Outage(); !outage {
+		t.Fatal("no outage after GitHub failed 5 times")
+	}
+
+	// The probe went out and failed with a plain 503, again and again: it
+	// waits on the hold each time, and never alerts or gives up.
+	q := NewQueue(nil, alert.New(""), app.Limits, 10)
+	job := Job{MergeSHA: "abc", Ref: Ref{Repo: "r"}}
+	unavailable := &githubapp.APIError{Method: "POST", Path: "/graphql", Status: 503}
+	for range maxAttempts + 2 {
+		q.report(unavailable, job)
+		q.mu.Lock()
+		timer := q.scheduled[job.key()]
+		if timer == nil || q.failing[job.key()] || q.transient[job.key()] != 0 || q.attempts[job.key()] != 0 {
+			q.mu.Unlock()
+			t.Fatalf("a failed probe: scheduled %v, failing %v, transient %v, attempts %v", q.scheduled, q.failing, q.transient, q.attempts)
+		}
+		timer.Stop()
+		delete(q.scheduled, job.key())
+		q.mu.Unlock()
+	}
 }
 
 func TestCommentNeutralisesNamesAndStaysSmall(t *testing.T) {

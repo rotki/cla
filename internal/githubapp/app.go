@@ -458,6 +458,10 @@ func (c *Client) send(ctx context.Context, r request) (response, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	var sent time.Time
+	if c.limits != nil {
+		sent = c.limits.now()
+	}
 	auth, err := c.auth(ctx)
 	if err != nil {
 		if paced {
@@ -466,7 +470,7 @@ func (c *Client) send(ctx context.Context, r request) (response, error) {
 		// Minting the token is a call to GitHub too: in an outage it must
 		// count and be held like any other.
 		if c.limits != nil {
-			c.limits.failed(err)
+			c.limits.failed(err, sent)
 		}
 		return response{}, err
 	}
@@ -612,17 +616,21 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	}
 
 	path := trimQuery(r.path)
+	var sent time.Time
+	if limits != nil {
+		sent = limits.now()
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		err = callFailed(err)
 		if limits != nil {
-			limits.failed(err)
+			limits.failed(err, sent)
 		}
 		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if limits != nil {
-		limits.answered(resp.StatusCode)
+		limits.answered(resp.StatusCode, sent)
 		limits.observe(resp.Header)
 	}
 	out := response{header: resp.Header}

@@ -357,6 +357,16 @@ func (q *Queue) report(err error, job Job) {
 		q.retryAt(job, retryAt)
 		return
 	}
+	if githubapp.Transient(err) && q.limits != nil {
+		if until, outage := q.limits.Outage(); outage {
+			// The probe, or a call already out when the hold began,
+			// failed: it waits on the hold like the calls the hold refused,
+			// rather than counting towards an alert or giving up.
+			slog.Warn("check failed during a GitHub outage, waiting on the hold", "pr", ref.String(), "retry_at", until)
+			q.retryHeld(job, until)
+			return
+		}
+	}
 	if githubapp.Transient(err) {
 		if q.retryTransient(job) <= quietAttempts {
 			slog.Warn("check failed, retrying", "pr", ref.String(), "call", githubapp.Call(err), "error", err)

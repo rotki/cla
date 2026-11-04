@@ -22,11 +22,14 @@ func request(realIP, peer string) *http.Request {
 
 func TestSourcesTellGitHubFromOthers(t *testing.T) {
 	meta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/meta" {
+		switch r.URL.Path {
+		case "/meta":
+			_, _ = w.Write([]byte(`{"hooks":["192.30.252.0/22","2a0a:a440::/29","bogus"]}`))
+		case "/grown/meta":
+			_, _ = w.Write([]byte(`{"hooks":["192.30.252.0/22","2a0a:a440::/29","198.51.100.0/24"]}`))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		_, _ = w.Write([]byte(`{"hooks":["192.30.252.0/22","2a0a:a440::/29","bogus"]}`))
 	}))
 	defer meta.Close()
 
@@ -66,17 +69,30 @@ func TestSourcesTellGitHubFromOthers(t *testing.T) {
 	}
 
 	// A valid delivery from outside, as behind a CDN, makes them blind
-	// until the next refresh, which it asks for.
+	// and asks for a refresh.
 	s.sawValid(request("192.30.252.17", peer))
 	if s.fromGitHub(request("203.0.113.9", peer)) {
 		t.Fatal("a valid delivery from inside made the ranges blind")
 	}
 	s.sawValid(request("198.51.100.4", peer))
 	if !s.fromGitHub(request("203.0.113.9", peer)) || len(s.stale) != 1 {
-		t.Fatalf("a valid delivery from outside: blind %v, refresh asked %d", s.blind, len(s.stale))
+		t.Fatalf("a valid delivery from outside: blind %v, refresh asked %d", len(s.outside) > 0, len(s.stale))
 	}
-	if err := s.Refresh(context.Background(), githubapp.NewPublicClient(meta.URL)); err != nil || s.fromGitHub(request("203.0.113.9", peer)) {
-		t.Fatalf("a refresh did not clear blindness: %v", err)
+	// The same address again asks for nothing more.
+	<-s.stale
+	s.sawValid(request("198.51.100.4", peer))
+	if len(s.stale) != 0 {
+		t.Fatal("a known outside address asked for another refresh")
+	}
+	// A refresh that still leaves the address out proves nothing: behind a
+	// CDN no later one will cover it either, and with a broken secret no
+	// valid delivery would come to make the ranges blind again.
+	if err := s.Refresh(context.Background(), githubapp.NewPublicClient(meta.URL)); err != nil || !s.fromGitHub(request("198.51.100.4", peer)) {
+		t.Fatalf("a refresh that does not cover the address cleared blindness: %v", err)
+	}
+	// One that covers it, as when GitHub added the range, clears it.
+	if err := s.Refresh(context.Background(), githubapp.NewPublicClient(meta.URL+"/grown")); err != nil || s.fromGitHub(request("203.0.113.9", peer)) {
+		t.Fatalf("a refresh that covers the address did not clear blindness: %v", err)
 	}
 
 	var none *Sources

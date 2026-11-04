@@ -25,13 +25,17 @@ import (
 //
 // A delivery with a valid signature from outside the list shows the address
 // cannot be told apart here: a CDN or a proxy that sets X-Real-Ip to its own
-// address sits in front, or GitHub added a range. Until the next refresh
-// every bad signature then alerts again, so a broken secret is never hidden.
+// address sits in front, or GitHub added a range. Every bad signature then
+// alerts again, so a broken secret is never hidden, until a refresh lists
+// every address such a delivery came from. A refresh alone proves nothing:
+// behind a CDN the ranges never will, and a broken secret lets no valid
+// delivery through to show it.
 type Sources struct {
 	mu       sync.RWMutex
 	prefixes []netip.Prefix
-	// blind is set by a valid delivery from outside the list.
-	blind bool
+	// outside holds the addresses valid deliveries came from that the list
+	// does not cover; while any is left, the list is blind.
+	outside map[netip.Addr]struct{}
 	// stale asks Run for an early refresh, which follows the last one by
 	// minAge at the soonest.
 	stale  chan struct{}
@@ -62,7 +66,11 @@ func (s *Sources) Refresh(ctx context.Context, c *githubapp.Client) error {
 	}
 	s.mu.Lock()
 	s.prefixes = prefixes
-	s.blind = false
+	for addr := range s.outside {
+		if s.covers(addr) {
+			delete(s.outside, addr)
+		}
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -130,33 +138,38 @@ func (s *Sources) fromGitHub(r *http.Request) bool {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	in, known := s.contains(r)
-	return in || !known || s.blind
+	_, in, known := s.contains(r)
+	return in || !known || len(s.outside) > 0
 }
 
-// sawValid notes a delivery with a valid signature. From outside the ranges
-// it makes them blind until the next refresh, and asks for that early.
+// sawValid notes a delivery with a valid signature. From an address outside
+// the ranges it makes them blind until a refresh covers that address, and
+// asks for a refresh early.
 func (s *Sources) sawValid(r *http.Request) {
 	if s == nil {
 		return
 	}
 	// Most deliveries change nothing: look under the read lock first.
 	s.mu.RLock()
-	in, known := s.contains(r)
-	outside := known && !in && !s.blind
+	addr, in, known := s.contains(r)
+	_, seen := s.outside[addr]
 	s.mu.RUnlock()
-	if !outside {
+	if in || !known || seen {
 		return
 	}
 	s.mu.Lock()
-	in, known = s.contains(r)
-	newly := known && !in && !s.blind
+	addr, in, known = s.contains(r)
+	_, seen = s.outside[addr]
+	newly := known && !in && !seen
 	if newly {
-		s.blind = true
+		if s.outside == nil {
+			s.outside = make(map[netip.Addr]struct{})
+		}
+		s.outside[addr] = struct{}{}
 	}
 	s.mu.Unlock()
 	if newly {
-		slog.Warn("a valid webhook came from outside GitHub's ranges: alerting on every bad signature until the ranges refresh; check that the proxy sets X-Real-Ip to the client's address")
+		slog.Warn("a valid webhook came from outside GitHub's ranges: alerting on every bad signature until the ranges cover its address; check that the proxy sets X-Real-Ip to the client's address")
 		s.markStale()
 	}
 }
@@ -165,9 +178,9 @@ func (s *Sources) sawValid(r *http.Request) {
 // known: false when the ranges are not loaded or the address does not parse.
 // The client is X-Real-Ip, which the proxy in front sets, or the peer
 // address, as in the access log. Called with s.mu held.
-func (s *Sources) contains(r *http.Request) (in, known bool) {
+func (s *Sources) contains(r *http.Request) (addr netip.Addr, in, known bool) {
 	if len(s.prefixes) == 0 {
-		return false, false
+		return addr, false, false
 	}
 	remote := r.Header.Get("X-Real-Ip")
 	if remote == "" {
@@ -175,13 +188,18 @@ func (s *Sources) contains(r *http.Request) (in, known bool) {
 	}
 	addr, err := netip.ParseAddr(remote)
 	if err != nil {
-		return false, false
+		return addr, false, false
 	}
 	addr = addr.Unmap()
+	return addr, s.covers(addr), true
+}
+
+// covers reports whether addr is in the ranges. Called with s.mu held.
+func (s *Sources) covers(addr netip.Addr) bool {
 	for _, p := range s.prefixes {
 		if p.Contains(addr) {
-			return true, true
+			return true
 		}
 	}
-	return false, true
+	return false
 }

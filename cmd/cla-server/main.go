@@ -111,6 +111,10 @@ func run() error {
 		BotLogin:      func() string { return app.Slug() + "[bot]" },
 		NoComments:    !cfg.Comments,
 	})
+	app.Limits.OnOutage(
+		func(status int) { alerts.Report(alert.GitHubFailing, alert.Detail{Status: status}) },
+		func() { alerts.Resolve(alert.GitHubFailing) },
+	)
 	queue := check.NewQueue(checker, alerts, app.Limits, 1000)
 	sweeper := reconcile.New(gh, st, agreement, checker, queue, alerts, app.Limits, cfg.Org)
 

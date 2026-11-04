@@ -442,6 +442,9 @@ func (c *Client) send(ctx context.Context, r request) (response, error) {
 		if until, blocked := c.limits.Blocked(resource); blocked {
 			return response{}, &RateLimitError{APIError: APIError{Method: r.method, Path: trimQuery(r.path)}, RetryAt: until}
 		}
+		if until, held := c.limits.Held(); held {
+			return response{}, &RateLimitError{APIError: APIError{Method: r.method, Path: trimQuery(r.path)}, RetryAt: until, Outage: true}
+		}
 	}
 	// Waiting for a write slot is not part of the call: the timeout starts
 	// once the request may go out.
@@ -606,10 +609,17 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	path := trimQuery(r.path)
 	resp, err := client.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, callFailed(err))
+		err = callFailed(err)
+		// A call cut short by its caller says nothing about GitHub.
+		var terr *transportError
+		if limits != nil && errors.As(err, &terr) && !errors.Is(err, context.Canceled) {
+			limits.answered(0)
+		}
+		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if limits != nil {
+		limits.answered(resp.StatusCode)
 		limits.observe(resp.Header)
 	}
 	out := response{header: resp.Header}

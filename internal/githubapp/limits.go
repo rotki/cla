@@ -16,9 +16,16 @@ import (
 type RateLimitError struct {
 	APIError
 	RetryAt time.Time
+	// Outage marks a call held back while GitHub keeps failing, rather than
+	// one GitHub limited; see Limits.Held. Callers defer it the same way,
+	// without the rate limit alert: the hold raises its own.
+	Outage bool
 }
 
 func (e *RateLimitError) Error() string {
+	if e.Outage {
+		return e.APIError.Error() + " (held: GitHub keeps failing)"
+	}
 	return e.APIError.Error() + " (rate limited)"
 }
 
@@ -33,6 +40,12 @@ func RetryAfter(err error) (time.Time, bool) {
 		return rl.RetryAt, true
 	}
 	return time.Time{}, false
+}
+
+// Held reports whether err is a call held back while GitHub keeps failing.
+func Held(err error) bool {
+	var rl *RateLimitError
+	return errors.As(err, &rl) && rl.Outage
 }
 
 // rateLimited classifies a refused response, following GitHub's guidance: a
@@ -86,7 +99,26 @@ type Limits struct {
 	// warns that requests sent while limited can get an integration banned.
 	blockedUntil time.Time
 	now          func() time.Time
+
+	// failures counts calls in a row that got a server error or no answer.
+	// After holdAfter of them every call is held back until heldUntil, so a
+	// GitHub outage is not met with a retry from every pull request. The
+	// first call after a hold is the probe: an answer ends it, another
+	// failure holds again for twice as long.
+	failures  int
+	heldUntil time.Time
+	hold      time.Duration
+	onHold    func(status int)
+	onRecover func()
 }
+
+// The outage hold: after holdAfter failed calls in a row, a minute, then
+// twice as long each time the probe fails, up to holdMax.
+const (
+	holdAfter = 5
+	holdMin   = time.Minute
+	holdMax   = 15 * time.Minute
+)
 
 func NewLimits() *Limits {
 	return &Limits{resources: map[string]Quota{}, now: time.Now}
@@ -124,6 +156,52 @@ func (l *Limits) Low(fraction float64) (bool, time.Time) {
 		}
 	}
 	return !until.IsZero(), until
+}
+
+// OnOutage sets what to do when a hold starts, with the status of the last
+// failure (0 for no answer), and when a call gets an answer again after one.
+// Both run outside the lock and must not block.
+func (l *Limits) OnOutage(hold func(status int), recovered func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onHold, l.onRecover = hold, recovered
+}
+
+// answered notes how GitHub answered a call: status, or 0 for no answer.
+// A server error or no answer counts towards a hold, anything else ends one.
+func (l *Limits) answered(status int) {
+	failed := status == 0 || status >= 500
+	l.mu.Lock()
+	var hold func(int)
+	var recovered func()
+	if failed {
+		l.failures++
+		if now := l.now(); l.failures >= holdAfter && !l.heldUntil.After(now) {
+			l.hold = min(max(2*l.hold, holdMin), holdMax)
+			l.heldUntil = now.Add(l.hold)
+			hold = l.onHold
+		}
+	} else {
+		if l.hold > 0 {
+			recovered = l.onRecover
+		}
+		l.failures, l.hold = 0, 0
+	}
+	l.mu.Unlock()
+	if hold != nil {
+		hold(status)
+	}
+	if recovered != nil {
+		recovered()
+	}
+}
+
+// Held reports whether calls are held back because GitHub keeps failing,
+// and until when.
+func (l *Limits) Held() (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.heldUntil, l.heldUntil.After(l.now())
 }
 
 // Block stops all calls until the given time.

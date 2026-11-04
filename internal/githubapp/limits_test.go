@@ -277,3 +277,74 @@ func TestPacerKeepsAReserveForPeople(t *testing.T) {
 		t.Fatalf("a released slot was not reusable: %v", err)
 	}
 }
+
+func TestOutageHold(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	var holds, recoveries []int
+	l.OnOutage(func(status int) { holds = append(holds, status) }, func() { recoveries = append(recoveries, 1) })
+
+	// An answer before the threshold starts the count over.
+	for range holdAfter - 1 {
+		l.answered(502)
+	}
+	l.answered(200)
+	for range holdAfter - 1 {
+		l.answered(0)
+	}
+	if _, held := l.Held(); held || len(holds) != 0 {
+		t.Fatalf("held after %d failures in a row", holdAfter-1)
+	}
+	l.answered(503)
+	if until, held := l.Held(); !held || !until.Equal(now.Add(holdMin)) || len(holds) != 1 || holds[0] != 503 {
+		t.Fatalf("after %d failures: held until %v (%v), holds %v", holdAfter, until, held, holds)
+	}
+
+	// A probe that fails holds again for twice as long, up to holdMax.
+	want := []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, holdMax, holdMax}
+	for _, d := range want {
+		now = now.Add(holdMax)
+		l.answered(0)
+		if until, held := l.Held(); !held || !until.Equal(now.Add(d)) {
+			t.Fatalf("a failed probe: held until %v, want %v", until, now.Add(d))
+		}
+	}
+	if len(holds) != 1+len(want) {
+		t.Fatalf("holds %v", holds)
+	}
+
+	// The next answer ends it, once.
+	now = now.Add(holdMax)
+	l.answered(404)
+	l.answered(200)
+	if _, held := l.Held(); held || len(recoveries) != 1 {
+		t.Fatalf("after an answer: held %v, recoveries %d", held, len(recoveries))
+	}
+	l.answered(500)
+	if until, held := l.Held(); held {
+		t.Fatalf("one failure after recovering held until %v", until)
+	}
+}
+
+func TestClientHoldsCallsWhileGitHubFails(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	c := NewPublicClient(srv.URL)
+	for range holdAfter {
+		if _, err := c.Do(context.Background(), http.MethodGet, "/meta", nil, nil); Held(err) {
+			t.Fatalf("held before %d failures: %v", holdAfter, err)
+		}
+	}
+	_, err := c.Do(context.Background(), http.MethodGet, "/meta", nil, nil)
+	if !Held(err) || hits != holdAfter {
+		t.Fatalf("after %d failures: %v, GitHub reached %d times", holdAfter, err, hits)
+	}
+	if at, ok := RetryAfter(err); !ok || time.Until(at) <= 0 {
+		t.Fatalf("a held call must be deferred like a limit: %v %v", at, ok)
+	}
+}

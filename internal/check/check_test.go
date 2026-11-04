@@ -344,6 +344,19 @@ func TestGivingUpOnBlipsKeepsTheCount(t *testing.T) {
 	}
 }
 
+func TestHeldCallsWaitWithoutAlerting(t *testing.T) {
+	q := NewQueue(nil, alert.New(""), nil, 10)
+	job := Job{Ref: Ref{Repo: "r", Number: 1}}
+	held := &githubapp.RateLimitError{APIError: githubapp.APIError{Path: "/graphql"}, RetryAt: time.Now().Add(time.Minute), Outage: true}
+	q.report(held, job)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.scheduled[job.key()] == nil || q.limited[job.key()] || q.failing[job.key()] || q.transient[job.key()] != 0 {
+		t.Fatalf("a held call: scheduled %v, limited %v, failing %v, transient %v", q.scheduled, q.limited, q.failing, q.transient)
+	}
+	q.scheduled[job.key()].Stop()
+}
+
 func TestCommentNeutralisesNamesAndStaysSmall(t *testing.T) {
 	var res Result
 	res.Unlinked = append(res.Unlinked, Author{Name: "Sign at https://evil.example `x` [click](https://evil.example)"})

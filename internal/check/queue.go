@@ -337,7 +337,16 @@ func (q *Queue) report(err error, job Job) {
 		q.retryAt(job, time.Now().Add(30*time.Second))
 		return
 	}
-	if retryAt, limited := githubapp.RetryAfter(err); limited {
+	retryAt, limited := githubapp.RetryAfter(err)
+	if limited && githubapp.Held(err) {
+		// GitHub keeps failing: wait out the hold like a limit, without
+		// the rate limit alert or a failure of its own. The hold alerts once
+		// for every pull request.
+		slog.Warn("GitHub calls held, rescheduling", "pr", ref.String(), "retry_at", retryAt)
+		q.retryAt(job, retryAt)
+		return
+	}
+	if limited {
 		// Never wait out a limit on a worker: reschedule and move on.
 		slog.Warn("rate limited, rescheduling", "pr", ref.String(), "retry_at", retryAt)
 		q.mu.Lock()

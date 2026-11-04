@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,24 +46,37 @@ func StatusOf(err error) int {
 	return 0
 }
 
-// transportError marks a call that got no answer from GitHub: the connection
-// failed, or the call timed out. Its text is the cause's.
+// transportError marks a call that got no whole answer from GitHub: the
+// connection failed, or the call timed out. Its text is the cause's.
 type transportError struct{ err error }
 
 func (e *transportError) Error() string { return e.err.Error() }
 func (e *transportError) Unwrap() error { return e.err }
 
 // Transient reports whether a failed call may succeed when tried again soon:
-// a transport error (a timed out call included), a server error or a rate
-// limit. A 4xx such as a wrong client secret never will, nor a GraphQL error
-// or anything that did not come from a call to GitHub. Callers stop on their
-// own context.
+// a transport error (a timed out call included), a server error, a rate
+// limit, or a GraphQL error without a type, which is how GitHub reports a
+// query that failed on its side ("Something went wrong", a timeout). A 4xx
+// such as a wrong client secret never will, nor a typed GraphQL error such
+// as NOT_FOUND, nor anything that did not come from a call to GitHub.
+// Callers stop on their own context.
 func Transient(err error) bool {
 	if _, limited := RetryAfter(err); limited {
 		return true
 	}
 	var terr *transportError
-	return errors.As(err, &terr) || StatusOf(err) >= 500
+	if errors.As(err, &terr) || StatusOf(err) >= 500 {
+		return true
+	}
+	var gqlErr *GraphQLError
+	if errors.As(err, &gqlErr) && !NoAccess(err) {
+		for _, t := range gqlErr.Types {
+			if t == "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsStatus reports whether err is an APIError with the given status.
@@ -611,12 +625,26 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	if raw, ok := r.out.(*rawBody); ok {
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		*raw = data
-		return out, err
+		if err != nil {
+			return out, fmt.Errorf("github %s %s: reading response: %w", r.method, path, readFailed(ctx, err))
+		}
+		return out, nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(r.out); err != nil {
-		return out, fmt.Errorf("github %s %s: decoding response: %w", r.method, path, err)
+		return out, fmt.Errorf("github %s %s: decoding response: %w", r.method, path, readFailed(ctx, err))
 	}
 	return out, nil
+}
+
+// readFailed marks an answer cut off before its end as a transport error:
+// the connection dropped, or the call timed out, partway through the body. A
+// body that arrived whole but does not decode is left as it is.
+func readFailed(ctx context.Context, err error) error {
+	var netErr net.Error
+	if ctx.Err() != nil || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &netErr) {
+		return &transportError{err}
+	}
+	return err
 }
 
 func trimQuery(path string) string {

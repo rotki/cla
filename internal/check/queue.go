@@ -447,40 +447,36 @@ func backoff(attempt int) time.Duration {
 // and the sweep finds only pull requests, so a merge queue commit gets its
 // status from these retries or not at all.
 func (q *Queue) retryAt(job Job, at time.Time) {
-	key := job.key()
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if _, ok := q.scheduled[key]; ok {
-		return
-	}
-	q.attempts[key]++
-	n := q.attempts[key]
-	if n > maxAttempts {
-		delete(q.attempts, key)
-		delete(q.limited, key)
-		slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
-		return
-	}
-	q.schedule(job, max(time.Until(at), backoff(n)))
+	q.retry(job, q.attempts, at)
 }
 
-// retryTransient queues job again after a transient failure, with the same
-// backoff, and returns how many such failures in a row it has seen. A failure
-// while a retry is already waiting is not counted: the retry decides.
+// retryTransient queues job again after a transient failure and returns how
+// many such failures in a row it has seen, counted in q.transient.
 func (q *Queue) retryTransient(job Job) int {
+	return q.retry(job, q.transient, time.Now())
+}
+
+// retry counts one more failure of job in counts and queues it again after
+// the backoff for that count, and no sooner than at. A failure while a retry
+// is already waiting is not counted: the retry decides. After maxAttempts the
+// pull request is left to a later sweep and its count starts over. It
+// returns the count, more than maxAttempts when it gave up.
+func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time) int {
 	key := job.key()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, ok := q.scheduled[key]; ok {
-		return q.transient[key]
+		return counts[key]
 	}
-	q.transient[key]++
-	n := q.transient[key]
+	counts[key]++
+	n := counts[key]
 	if n > maxAttempts {
+		delete(counts, key)
+		delete(q.limited, key)
 		slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
 		return n
 	}
-	q.schedule(job, backoff(n))
+	q.schedule(job, max(time.Until(at), backoff(n)))
 	return n
 }
 

@@ -77,7 +77,10 @@ func TestTransient(t *testing.T) {
 		// never came from a call to GitHub.
 		{&GraphQLError{Count: 1, Types: []string{"NOT_FOUND"}}, false},
 		{&GraphQLError{Count: 1, Types: []string{"FORBIDDEN"}}, false},
+		{&GraphQLError{Count: 2, Types: []string{"", "NOT_FOUND"}}, false},
 		{fmt.Errorf("writing the journal: disk full"), false},
+		// An untyped GraphQL error is GitHub failing on its side.
+		{&GraphQLError{Count: 1, Types: []string{""}}, true},
 	}
 	for _, tc := range cases {
 		if got := Transient(tc.err); got != tc.want {
@@ -91,5 +94,40 @@ func TestTransient(t *testing.T) {
 	_, err := NewPublicClient(srv.URL).Do(context.Background(), http.MethodGet, "/meta", nil, nil)
 	if err == nil || !Transient(err) {
 		t.Fatalf("a refused connection: Transient(%v) = false", err)
+	}
+
+	// So is an answer cut off partway, but not one that is whole and wrong.
+	for body, cut := range map[string]bool{`{"hooks":`: true, `not json`: false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if cut {
+				// Promise more than is sent, so the connection ends early.
+				w.Header().Set("Content-Length", "100")
+			}
+			_, _ = w.Write([]byte(body))
+		}))
+		var out map[string]any
+		_, err := NewPublicClient(srv.URL).Do(context.Background(), http.MethodGet, "/meta", nil, &out)
+		srv.Close()
+		if err == nil || Transient(err) != cut {
+			t.Errorf("body %q: Transient(%v) = %v, want %v", body, err, !cut, cut)
+		}
+	}
+}
+
+func TestRevokeRetriesADroppedConnection(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls < 3 {
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	o := &OAuth{ClientID: "id", ClientSecret: "s", APIURL: srv.URL, RevokeDelays: []time.Duration{time.Millisecond, time.Millisecond}}
+	if err := o.Revoke(context.Background(), "token"); err != nil || calls != 3 {
+		t.Fatalf("Revoke = %v after %d calls, want success on the third", err, calls)
 	}
 }

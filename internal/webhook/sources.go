@@ -32,12 +32,14 @@ type Sources struct {
 	prefixes []netip.Prefix
 	// blind is set by a valid delivery from outside the list.
 	blind bool
-	// stale asks Run for an early refresh.
-	stale chan struct{}
+	// stale asks Run for an early refresh, which follows the last one by
+	// minAge at the soonest.
+	stale  chan struct{}
+	minAge time.Duration
 }
 
 func NewSources() *Sources {
-	return &Sources{stale: make(chan struct{}, 1)}
+	return &Sources{stale: make(chan struct{}, 1), minAge: sourcesMinAge}
 }
 
 // Refresh loads the ranges from GitHub's /meta endpoint. On failure the
@@ -73,15 +75,21 @@ const (
 	sourcesMinAge = time.Hour
 )
 
-// Run refreshes the ranges now and then every interval until ctx is done.
+// Run refreshes the ranges now and then every interval until ctx is done. An
+// early refresh asked for too soon after the last one is put off until it may
+// follow, not dropped: nothing may ask again.
 func (s *Sources) Run(ctx context.Context, c *githubapp.Client, interval time.Duration) {
 	for {
 		wait := interval
 		last := time.Now()
 		if err := s.Refresh(ctx, c); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			slog.Warn("loading GitHub's webhook ranges failed", "error", err)
 			wait = sourcesRetry
 		}
+		next := last.Add(wait)
 		timer := time.NewTimer(wait)
 		for waiting := true; waiting; {
 			select {
@@ -91,7 +99,10 @@ func (s *Sources) Run(ctx context.Context, c *githubapp.Client, interval time.Du
 			case <-timer.C:
 				waiting = false
 			case <-s.stale:
-				waiting = time.Since(last) < sourcesMinAge
+				if early := last.Add(s.minAge); early.Before(next) {
+					next = early
+					timer.Reset(time.Until(next))
+				}
 			}
 		}
 		timer.Stop()
@@ -129,8 +140,16 @@ func (s *Sources) sawValid(r *http.Request) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
+	// Most deliveries change nothing: look under the read lock first.
+	s.mu.RLock()
 	in, known := s.contains(r)
+	outside := known && !in && !s.blind
+	s.mu.RUnlock()
+	if !outside {
+		return
+	}
+	s.mu.Lock()
+	in, known = s.contains(r)
 	newly := known && !in && !s.blind
 	if newly {
 		s.blind = true

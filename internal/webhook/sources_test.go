@@ -117,3 +117,34 @@ func TestEarlyRefreshesAreThrottled(t *testing.T) {
 		t.Fatalf("/meta called %d times", n)
 	}
 }
+
+func TestEarlyRefreshTooSoonIsPutOff(t *testing.T) {
+	var calls atomic.Int32
+	meta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"hooks":["192.30.252.0/22"]}`))
+	}))
+	defer meta.Close()
+
+	s := NewSources()
+	s.minAge = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx, githubapp.NewPublicClient(meta.URL), time.Hour)
+	for calls.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Asked for at once, the refresh waits out minAge, then happens.
+	s.markStale()
+	time.Sleep(50 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("refreshed %d times before minAge", n)
+	}
+	for deadline := time.Now().Add(5 * time.Second); calls.Load() < 2; {
+		if time.Now().After(deadline) {
+			t.Fatal("the early refresh asked for too soon never happened")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

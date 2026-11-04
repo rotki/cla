@@ -442,6 +442,9 @@ func (c *Client) send(ctx context.Context, r request) (response, error) {
 		if until, blocked := c.limits.Blocked(resource); blocked {
 			return response{}, &RateLimitError{APIError: APIError{Method: r.method, Path: trimQuery(r.path)}, RetryAt: until}
 		}
+		if until, held := c.limits.Held(); held {
+			return response{}, &RateLimitError{APIError: APIError{Method: r.method, Path: trimQuery(r.path)}, RetryAt: until, Outage: true}
+		}
 	}
 	// Waiting for a write slot is not part of the call: the timeout starts
 	// once the request may go out.
@@ -455,10 +458,19 @@ func (c *Client) send(ctx context.Context, r request) (response, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	var sent time.Time
+	if c.limits != nil {
+		sent = c.limits.now()
+	}
 	auth, err := c.auth(ctx)
 	if err != nil {
 		if paced {
 			c.pacer.Release(slot)
+		}
+		// Minting the token is a call to GitHub too: in an outage it must
+		// count and be held like any other.
+		if c.limits != nil {
+			c.limits.failed(err, sent)
 		}
 		return response{}, err
 	}
@@ -604,12 +616,21 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	}
 
 	path := trimQuery(r.path)
+	var sent time.Time
+	if limits != nil {
+		sent = limits.now()
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, callFailed(err))
+		err = callFailed(err)
+		if limits != nil {
+			limits.failed(err, sent)
+		}
+		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if limits != nil {
+		limits.answered(resp.StatusCode, sent)
 		limits.observe(resp.Header)
 	}
 	out := response{header: resp.Header}

@@ -298,6 +298,11 @@ func (s *Sweeper) limited(err error) bool {
 	if _, ok := githubapp.RetryAfter(err); !ok {
 		return false
 	}
+	if githubapp.Held(err) {
+		// The hold has its own alert; the next sweep tries again.
+		slog.Warn("GitHub calls held, the reconcile sweep waits", "error", err)
+		return true
+	}
 	slog.Warn("rate limited during the reconcile sweep", "error", err)
 	s.alerts.Report(alert.RateLimited, alert.Detail{Status: githubapp.StatusOf(err)})
 	return true

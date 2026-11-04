@@ -37,6 +37,7 @@ const (
 	AuditBroken    Kind = "audit_broken"
 	NoAccess       Kind = "no_access"
 	NotInstalled   Kind = "not_installed"
+	GitHubFailing  Kind = "github_failing"
 )
 
 var titles = map[Kind]string{
@@ -51,6 +52,7 @@ var titles = map[Kind]string{
 	AuditBroken:    "The audit log chain is broken, no anchor published: run cla-tool verify",
 	NoAccess:       "The App has no access to a repository it was asked to check: it is not installed there, or a permission is missing. Check the App's installation and permissions",
 	NotInstalled:   "GitHub refused the App an installation token: it was uninstalled from the organization or the installation is suspended. Nothing can be checked until it is installed again",
+	GitHubFailing:  "GitHub keeps failing: calls to it are held back for a while, and the work waits until it answers again",
 }
 
 // recovered says what is known to be fine again, so a recovery does not read
@@ -70,6 +72,7 @@ var recovered = map[Kind]string{
 	AuditBroken:    "The audit log chain verifies again",
 	NoAccess:       "No pull request is still failing for lack of access",
 	NotInstalled:   "Nothing is still failing for a refused installation token",
+	GitHubFailing:  "GitHub answers again, calls are no longer held back",
 }
 
 // ForError picks the alert for a GitHub error and fills d with what it may

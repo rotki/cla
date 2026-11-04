@@ -277,3 +277,196 @@ func TestPacerKeepsAReserveForPeople(t *testing.T) {
 		t.Fatalf("a released slot was not reusable: %v", err)
 	}
 }
+
+func TestOutageHold(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	var holds, recoveries []int
+	l.OnOutage(func(status int) { holds = append(holds, status) }, func() { recoveries = append(recoveries, 1) })
+
+	// An answer before the threshold starts the count over.
+	for range holdAfter - 1 {
+		l.answered(502, now)
+	}
+	l.answered(200, now)
+	for range holdAfter - 1 {
+		l.answered(0, now)
+	}
+	if _, held := l.Held(); held || len(holds) != 0 {
+		t.Fatalf("held after %d failures in a row", holdAfter-1)
+	}
+	l.answered(503, now)
+	if until, held := l.Held(); !held || !until.Equal(now.Add(holdMin)) || len(holds) != 1 || holds[0] != 503 {
+		t.Fatalf("after %d failures: held until %v (%v), holds %v", holdAfter, until, held, holds)
+	}
+
+	// A probe that fails holds again for twice as long, up to holdMax.
+	want := []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, holdMax, holdMax}
+	for _, d := range want {
+		now = now.Add(holdMax)
+		l.answered(0, now)
+		if until, held := l.Held(); !held || !until.Equal(now.Add(d)) {
+			t.Fatalf("a failed probe: held until %v, want %v", until, now.Add(d))
+		}
+	}
+	if len(holds) != 1+len(want) {
+		t.Fatalf("holds %v", holds)
+	}
+
+	// The next answer ends it, once.
+	now = now.Add(holdMax)
+	l.answered(404, now)
+	l.answered(200, now)
+	if _, held := l.Held(); held || len(recoveries) != 1 {
+		t.Fatalf("after an answer: held %v, recoveries %d", held, len(recoveries))
+	}
+	l.answered(500, now)
+	if until, held := l.Held(); held {
+		t.Fatalf("one failure after recovering held until %v", until)
+	}
+}
+
+func TestFailuresSpreadOutDoNotHold(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	for range holdAfter - 1 {
+		l.answered(502, now)
+	}
+	now = now.Add(holdWindow + time.Second)
+	l.answered(502, now)
+	if _, held := l.Held(); held {
+		t.Fatal("failures spread over more than holdWindow started a hold")
+	}
+	for range holdAfter - 1 {
+		l.answered(502, now)
+	}
+	if _, held := l.Held(); !held {
+		t.Fatal("failures within holdWindow did not start a hold")
+	}
+}
+
+func TestOneProbeAfterAHold(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	for range holdAfter {
+		l.answered(0, now)
+	}
+	now = now.Add(holdMin)
+
+	if _, held := l.Held(); held {
+		t.Fatal("no probe let through once the hold ended")
+	}
+	if until, held := l.Held(); !held || !until.Equal(now.Add(probeTimeout)) {
+		t.Fatalf("a second call went out beside the probe: held until %v", until)
+	}
+	// A probe that never reports back frees its place.
+	now = now.Add(probeTimeout)
+	if _, held := l.Held(); held {
+		t.Fatal("a lost probe kept every call held")
+	}
+	l.answered(200, now)
+	for range 3 {
+		if _, held := l.Held(); held {
+			t.Fatal("calls held after the probe got an answer")
+		}
+	}
+}
+
+func TestFailedTokenCountsTowardsAHold(t *testing.T) {
+	c := NewPublicClient("http://127.0.0.1:1")
+	tokens := 0
+	c.auth = func(context.Context) (string, error) {
+		tokens++
+		return "", &APIError{Method: http.MethodPost, Path: "/app/installations/1/access_tokens", Status: 502}
+	}
+	for range holdAfter + 3 {
+		_, _ = c.Do(context.Background(), http.MethodGet, "/repos/o/r", nil, nil)
+	}
+	if tokens != holdAfter {
+		t.Fatalf("token minted %d times, want %d before the hold", tokens, holdAfter)
+	}
+}
+
+func TestClientHoldsCallsWhileGitHubFails(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	c := NewPublicClient(srv.URL)
+	for range holdAfter {
+		if _, err := c.Do(context.Background(), http.MethodGet, "/meta", nil, nil); Held(err) {
+			t.Fatalf("held before %d failures: %v", holdAfter, err)
+		}
+	}
+	_, err := c.Do(context.Background(), http.MethodGet, "/meta", nil, nil)
+	if !Held(err) || hits != holdAfter {
+		t.Fatalf("after %d failures: %v, GitHub reached %d times", holdAfter, err, hits)
+	}
+	if at, ok := RetryAfter(err); !ok || time.Until(at) <= 0 {
+		t.Fatalf("a held call must be deferred like a limit: %v %v", at, ok)
+	}
+}
+
+func TestAnswersFromBeforeTheHoldDoNotEndIt(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	recoveries := 0
+	l.OnOutage(func(int) {}, func() { recoveries++ })
+	before := now.Add(-time.Second)
+	for range holdAfter {
+		l.answered(503, now)
+	}
+	// A call already out when the hold began comes back fine.
+	l.answered(200, before)
+	if _, held := l.Held(); !held || recoveries != 0 {
+		t.Fatalf("an answer from before the hold: held %v, recoveries %d", held, recoveries)
+	}
+	// After the hold the probe gate still applies.
+	now = now.Add(holdMin)
+	if _, held := l.Held(); held {
+		t.Fatal("no probe let through")
+	}
+	if _, held := l.Held(); !held {
+		t.Fatal("a second call went out beside the probe")
+	}
+	// The probe's answer ends the outage, and nothing stays held.
+	l.answered(200, now)
+	if _, held := l.Held(); held || recoveries != 1 {
+		t.Fatalf("after the probe's answer: held %v, recoveries %d", held, recoveries)
+	}
+	if _, outage := l.Outage(); outage {
+		t.Fatal("still in an outage after an answer")
+	}
+}
+
+func TestAnyTokenAnswerEndsTheHold(t *testing.T) {
+	c := NewPublicClient("http://127.0.0.1:1")
+	status := 502
+	c.auth = func(context.Context) (string, error) {
+		return "", &APIError{Method: http.MethodPost, Path: "/app/installations/1/access_tokens", Status: status}
+	}
+	recoveries := 0
+	c.limits.OnOutage(func(int) {}, func() { recoveries++ })
+	for range holdAfter {
+		_, _ = c.Do(context.Background(), http.MethodGet, "/repos/o/r", nil, nil)
+	}
+	if _, outage := c.limits.Outage(); !outage {
+		t.Fatal("failed token mints started no hold")
+	}
+	// The App was uninstalled meanwhile: GitHub answers the probe's mint
+	// with a 404, which is an answer, not an outage.
+	c.limits.mu.Lock()
+	c.limits.heldUntil = time.Now()
+	c.limits.mu.Unlock()
+	status = http.StatusNotFound
+	_, err := c.Do(context.Background(), http.MethodGet, "/repos/o/r", nil, nil)
+	if _, outage := c.limits.Outage(); outage || recoveries != 1 || Held(err) {
+		t.Fatalf("a 404 mint: outage %v, recoveries %d, err %v", outage, recoveries, err)
+	}
+}

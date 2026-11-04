@@ -337,7 +337,17 @@ func (q *Queue) report(err error, job Job) {
 		q.retryAt(job, time.Now().Add(30*time.Second))
 		return
 	}
-	if retryAt, limited := githubapp.RetryAfter(err); limited {
+	retryAt, limited := githubapp.RetryAfter(err)
+	if limited && githubapp.Held(err) {
+		// GitHub keeps failing: wait out the hold, without the rate limit
+		// alert, a failure of its own or an attempt counted towards giving
+		// up. Nothing reached GitHub, and the hold alerts once for every
+		// pull request.
+		slog.Warn("GitHub calls held, rescheduling", "pr", ref.String(), "retry_at", retryAt)
+		q.retryHeld(job, retryAt)
+		return
+	}
+	if limited {
 		// Never wait out a limit on a worker: reschedule and move on.
 		slog.Warn("rate limited, rescheduling", "pr", ref.String(), "retry_at", retryAt)
 		q.mu.Lock()
@@ -346,6 +356,16 @@ func (q *Queue) report(err error, job Job) {
 		q.alerts.Report(alert.RateLimited, alert.Detail{Status: githubapp.StatusOf(err)})
 		q.retryAt(job, retryAt)
 		return
+	}
+	if githubapp.Transient(err) && q.limits != nil {
+		if until, outage := q.limits.Outage(); outage {
+			// The probe, or a call already out when the hold began,
+			// failed: it waits on the hold like the calls the hold refused,
+			// rather than counting towards an alert or giving up.
+			slog.Warn("check failed during a GitHub outage, waiting on the hold", "pr", ref.String(), "retry_at", until)
+			q.retryHeld(job, until)
+			return
+		}
 	}
 	if githubapp.Transient(err) {
 		if q.retryTransient(job) <= quietAttempts {
@@ -484,6 +504,18 @@ func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time, keep bool) i
 	}
 	q.schedule(job, max(time.Until(at), backoff(n)))
 	return n
+}
+
+// retryHeld queues job again once GitHub's outage hold allows, without
+// counting an attempt: however long the outage, the job waits rather than
+// being left to a sweep, which never finds a merge queue commit.
+func (q *Queue) retryHeld(job Job, at time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.scheduled[job.key()]; ok {
+		return
+	}
+	q.schedule(job, max(time.Until(at), 0))
 }
 
 // schedule queues job again after delay. Called with q.mu held.

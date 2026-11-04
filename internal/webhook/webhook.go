@@ -121,6 +121,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	h.sources.sawValid(r)
 
 	if h.seen(r.Header.Get("X-GitHub-Delivery")) {
 		w.WriteHeader(http.StatusOK)

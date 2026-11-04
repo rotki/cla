@@ -46,7 +46,8 @@ func TestSourcesTellGitHubFromOthers(t *testing.T) {
 		{"2a0a:a440::1", peer, true},
 		{"::ffff:192.30.253.1", peer, true},
 		{"203.0.113.9", peer, false},
-		{"not an address", peer, false},
+		// An address that does not parse cannot be ruled out.
+		{"not an address", peer, true},
 		{"", "192.30.254.3:443", true},
 		{"", "203.0.113.9:443", false},
 	}
@@ -64,11 +65,26 @@ func TestSourcesTellGitHubFromOthers(t *testing.T) {
 		t.Fatal("a failed refresh dropped the ranges")
 	}
 
+	// A valid delivery from outside, as behind a CDN, makes them blind
+	// until the next refresh, which it asks for.
+	s.sawValid(request("192.30.252.17", peer))
+	if s.fromGitHub(request("203.0.113.9", peer)) {
+		t.Fatal("a valid delivery from inside made the ranges blind")
+	}
+	s.sawValid(request("198.51.100.4", peer))
+	if !s.fromGitHub(request("203.0.113.9", peer)) || len(s.stale) != 1 {
+		t.Fatalf("a valid delivery from outside: blind %v, refresh asked %d", s.blind, len(s.stale))
+	}
+	if err := s.Refresh(context.Background(), githubapp.NewPublicClient(meta.URL)); err != nil || s.fromGitHub(request("203.0.113.9", peer)) {
+		t.Fatalf("a refresh did not clear blindness: %v", err)
+	}
+
 	var none *Sources
 	if !none.fromGitHub(request("203.0.113.9", peer)) {
 		t.Fatal("without sources every request must count as GitHub's")
 	}
 	none.markStale()
+	none.sawValid(request("203.0.113.9", peer))
 }
 
 func TestEarlyRefreshesAreThrottled(t *testing.T) {

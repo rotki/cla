@@ -56,6 +56,14 @@ func TestReportThrottlesRepeats(t *testing.T) {
 	}
 }
 
+func TestEveryAlertHasARecovery(t *testing.T) {
+	for kind := range titles {
+		if recovered[kind] == "" {
+			t.Errorf("%s has no recovery message", kind)
+		}
+	}
+}
+
 func TestResolveAnnouncesRecoveryOnce(t *testing.T) {
 	n, sent, _ := newTestNotifier()
 
@@ -73,7 +81,7 @@ func TestResolveAnnouncesRecoveryOnce(t *testing.T) {
 	if len(*sent) != 2 {
 		t.Fatalf("want failure and recovery, got %v", *sent)
 	}
-	if !strings.Contains((*sent)[1], "Recovered") || !strings.Contains((*sent)[1], "1 more failures") {
+	if (*sent)[1] != "**Recovered:** No pull request is still failing to be checked (it failed once more after the last alert)" {
 		t.Fatalf("unexpected recovery message %q", (*sent)[1])
 	}
 }

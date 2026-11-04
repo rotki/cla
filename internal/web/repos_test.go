@@ -100,7 +100,7 @@ func TestNoAccessClearsWhenTheRepositoryLeavesTheInstallation(t *testing.T) {
 	}
 
 	sweeper.Sweep(ctx)
-	waitForAlert(t, logs, "**Recovered:** The App has no access")
+	waitForAlert(t, logs, "**Recovered:** No pull request is still failing for lack of access")
 }
 
 func TestPrivateRepositoriesAreSkipped(t *testing.T) {

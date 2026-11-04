@@ -109,9 +109,13 @@ name, for example `rotki#12 while setting the commit status (GitHub 502 Bad Gate
 | The audit log chain is broken | the anchor check found the chain broken or the last published head missing |
 
 Each problem sends one message at once; repeats within the hour are counted and summarised
-once the hour is over, and a **Recovered** message follows when it clears. Some alerts clear
-only once everything they covered recovered: a check failure, no access or a refused token
-when no pull request is still failing, a rate limit when nothing is still waiting on one. A
+once the hour is over, and a **Recovered** message follows when it clears, saying only what is
+known to be fine again, with how many times it failed after the last alert if it did. Some
+alerts clear only once everything they covered recovered: a check failure, no access or a
+refused token when no pull request is still failing ("No pull request is still failing to be
+checked"), a rate limit when nothing is still waiting on one. Such a recovery says nothing
+about the CLA result, and a repository that still refuses the App alerts again on its next
+check. A
 pull request in a repository that leaves the installation (or `excluded_repos`) stops counting
 at the next listing of the installation's repositories, since nothing re-checks it.
 

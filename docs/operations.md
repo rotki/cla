@@ -99,7 +99,7 @@ name, for example `rotki#12 while setting the commit status (GitHub 502 Bad Gate
 |---|---|
 | GitHub refused the App an installation token | the App was uninstalled from the organization or the installation is suspended; nothing can be checked |
 | The App has no access to a repository | GitHub answered 403 or 404 for a repository: the App is not installed there, or a permission is missing |
-| CLA check failed | a pull request could not be checked or its status not posted, for any other reason |
+| CLA check failed | a pull request could not be checked or its status not posted, for any other reason. A GitHub server error or timeout is retried after 1 and 2 minutes first, and alerts only if the pull request still fails after that |
 | GitHub rate limit reached | a check or sweep hit a limit and was deferred |
 | Reconcile sweep failed | the periodic search for open pull requests failed |
 | Reading / writing the data directory failed | a refresh, the admin page or a signing could not use the volume |

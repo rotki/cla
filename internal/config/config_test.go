@@ -217,3 +217,17 @@ func TestLoadRequiresSecrets(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRejectsMalformedGitHubURLs(t *testing.T) {
+	for _, name := range []string{"GITHUB_API_URL", "GITHUB_URL"} {
+		for _, bad := range []string{"api.github.com", "ftp://api.github.com", "https://"} {
+			t.Run(name+"="+bad, func(t *testing.T) {
+				setBase(t)
+				t.Setenv(name, bad)
+				if _, err := Load(); err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("got %v", err)
+				}
+			})
+		}
+	}
+}

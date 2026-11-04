@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -45,16 +46,38 @@ func StatusOf(err error) int {
 	return 0
 }
 
+// transportError marks a call that got no whole answer from GitHub: the
+// connection failed, or the call timed out. Its text is the cause's.
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
+
 // Transient reports whether a failed call may succeed when tried again soon:
-// a transport error (a timed out call included), a server error or a rate
-// limit. A 4xx such as a wrong client secret never will. Callers stop on
-// their own context.
+// a transport error (a timed out call included), a server error, a rate
+// limit, or a GraphQL error with neither a type nor a code, which is how
+// GitHub reports a query that failed on its side ("Something went wrong", a
+// timeout). A 4xx such as a wrong client secret never will, nor a GraphQL
+// error such as NOT_FOUND or a rejected query, nor a certificate GitHub's
+// answer failed, nor anything that did not come from a call to GitHub.
+// Callers stop on their own context.
 func Transient(err error) bool {
 	if _, limited := RetryAfter(err); limited {
 		return true
 	}
-	status := StatusOf(err)
-	return status == 0 || status >= 500
+	var terr *transportError
+	if errors.As(err, &terr) || StatusOf(err) >= 500 {
+		return true
+	}
+	var gqlErr *GraphQLError
+	if errors.As(err, &gqlErr) && !NoAccess(err) {
+		for _, t := range gqlErr.Types {
+			if t == "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsStatus reports whether err is an APIError with the given status.
@@ -496,7 +519,9 @@ func nextLink(link, apiURL string) string {
 
 // GraphQLError is returned when the GraphQL response carries errors. Like
 // APIError it keeps no message text, only GitHub's error types (NOT_FOUND,
-// FORBIDDEN and the like), a fixed vocabulary.
+// FORBIDDEN and the like), a fixed vocabulary. An error without a type that
+// GitHub rejected the query with carries its extensions code instead, such
+// as undefinedField; one with neither is "", GitHub failing on its side.
 type GraphQLError struct {
 	Count int
 	Types []string
@@ -511,8 +536,11 @@ func (c *Client) GraphQL(ctx context.Context, query string, vars map[string]any,
 	var resp struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
+			Type       string `json:"type"`
+			Message    string `json:"message"`
+			Extensions struct {
+				Code string `json:"code"`
+			} `json:"extensions"`
 		} `json:"errors"`
 	}
 	header, err := c.Do(ctx, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": vars}, &resp)
@@ -535,7 +563,11 @@ func (c *Client) GraphQL(ctx context.Context, query string, vars map[string]any,
 	if !limited {
 		gqlErr := &GraphQLError{Count: len(resp.Errors)}
 		for _, e := range resp.Errors {
-			gqlErr.Types = append(gqlErr.Types, e.Type)
+			t := e.Type
+			if t == "" {
+				t = e.Extensions.Code
+			}
+			gqlErr.Types = append(gqlErr.Types, t)
 		}
 		return gqlErr
 	}
@@ -574,7 +606,7 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	path := trimQuery(r.path)
 	resp, err := client.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, err)
+		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, callFailed(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if limits != nil {
@@ -603,12 +635,39 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	if raw, ok := r.out.(*rawBody); ok {
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		*raw = data
-		return out, err
+		if err != nil {
+			return out, fmt.Errorf("github %s %s: reading response: %w", r.method, path, readFailed(err))
+		}
+		return out, nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(r.out); err != nil {
-		return out, fmt.Errorf("github %s %s: decoding response: %w", r.method, path, err)
+		return out, fmt.Errorf("github %s %s: decoding response: %w", r.method, path, readFailed(err))
 	}
 	return out, nil
+}
+
+// callFailed marks a call that got no answer as a transport error, unless
+// GitHub's certificate failed verification: trying again will not fix that.
+func callFailed(err error) error {
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return err
+	}
+	return &transportError{err}
+}
+
+// readFailed marks an answer cut off before its end as a transport error:
+// the connection dropped, the HTTP/2 stream was reset or the call timed out
+// partway through the body. Only a body that arrived whole but does not
+// decode is left as it is.
+func readFailed(err error) error {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	var invalidErr *json.InvalidUnmarshalError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.As(err, &invalidErr) {
+		return err
+	}
+	return &transportError{err}
 }
 
 func trimQuery(path string) string {

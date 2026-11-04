@@ -92,6 +92,10 @@ type Queue struct {
 	running    map[Ref]*running
 	scheduled  map[jobKey]*time.Timer
 	attempts   map[jobKey]int
+	// transient counts the transient failures in a row, apart from attempts,
+	// so a rate limit neither brings a blip's alert forward nor takes a
+	// longer backoff from one.
+	transient map[jobKey]int
 	// failing and limited hold what last failed or hit a limit. Each alert
 	// is resolved once its set empties, not on the first job that succeeds,
 	// or every success between two failures would end the alert's quiet
@@ -108,6 +112,13 @@ const (
 	backoffMax  = time.Hour
 	maxAttempts = 6
 )
+
+// quietAttempts is how many times in a row a pull request may fail on a
+// transient GitHub error (a 5xx, a timeout) before it is alerted on. Each is
+// retried with the backoff above, so the alert goes out once it has kept
+// failing for about three minutes; a blip that clears before then is only
+// logged. After maxAttempts it is left to a later sweep, like a rate limit.
+const quietAttempts = 2
 
 // running is a pull request being checked, with work that arrived meanwhile.
 type running struct {
@@ -127,6 +138,7 @@ func NewQueue(checker *Checker, alerts *alert.Notifier, limits *githubapp.Limits
 		running:    map[Ref]*running{},
 		scheduled:  map[jobKey]*time.Timer{},
 		attempts:   map[jobKey]int{},
+		transient:  map[jobKey]int{},
 		failing:    map[jobKey]bool{},
 		limited:    map[jobKey]bool{},
 	}
@@ -246,6 +258,7 @@ func (q *Queue) handle(ctx context.Context, job Job) {
 			delete(q.scheduled, key)
 		}
 		delete(q.attempts, key)
+		delete(q.transient, key)
 		delete(q.failing, key)
 		delete(q.limited, key)
 		q.mu.Unlock()
@@ -304,6 +317,7 @@ func (q *Queue) report(err error, job Job) {
 	if err == nil {
 		q.mu.Lock()
 		delete(q.attempts, key)
+		delete(q.transient, key)
 		delete(q.failing, key)
 		delete(q.limited, key)
 		failing, limited := len(q.failing), len(q.limited)
@@ -333,6 +347,16 @@ func (q *Queue) report(err error, job Job) {
 		q.retryAt(job, retryAt)
 		return
 	}
+	if githubapp.Transient(err) {
+		if q.retryTransient(job) <= quietAttempts {
+			slog.Warn("check failed, retrying", "pr", ref.String(), "call", githubapp.Call(err), "error", err)
+			return
+		}
+	} else {
+		q.mu.Lock()
+		delete(q.transient, key)
+		q.mu.Unlock()
+	}
 	slog.Error("check failed", "pr", ref.String(), "call", githubapp.Call(err), "error", err)
 	q.mu.Lock()
 	q.failing[key] = true
@@ -361,8 +385,10 @@ func (q *Queue) ForgetSkipped() {
 			repos[key.ref.Repo] = true
 		}
 	}
-	for key := range q.attempts {
-		repos[key.ref.Repo] = true
+	for _, keys := range []map[jobKey]int{q.attempts, q.transient} {
+		for key := range keys {
+			repos[key.ref.Repo] = true
+		}
 	}
 	q.mu.Unlock()
 
@@ -391,9 +417,11 @@ func (q *Queue) ForgetSkipped() {
 			}
 		}
 	}
-	for key := range q.attempts {
-		if skipped[key.ref.Repo] {
-			delete(q.attempts, key)
+	for _, keys := range []map[jobKey]int{q.attempts, q.transient} {
+		for key := range keys {
+			if skipped[key.ref.Repo] {
+				delete(keys, key)
+			}
 		}
 	}
 	failing, limited := len(q.failing), len(q.limited)
@@ -419,21 +447,48 @@ func backoff(attempt int) time.Duration {
 // and the sweep finds only pull requests, so a merge queue commit gets its
 // status from these retries or not at all.
 func (q *Queue) retryAt(job Job, at time.Time) {
+	q.retry(job, q.attempts, at, false)
+}
+
+// retryTransient queues job again after a transient failure and returns how
+// many such failures in a row it has seen, counted in q.transient. The count
+// outlives giving up: a pull request that failed for an hour alerts on its
+// next failure instead of being retried quietly again.
+func (q *Queue) retryTransient(job Job) int {
+	return q.retry(job, q.transient, time.Now(), true)
+}
+
+// retry counts one more failure of job in counts and queues it again after
+// the backoff for that count, and no sooner than at. A failure while a retry
+// is already waiting is not counted: the retry decides. After maxAttempts the
+// pull request is left to a later sweep, and its count starts over unless
+// keep is set. It returns the count, more than maxAttempts when it gave up.
+func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time, keep bool) int {
 	key := job.key()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, ok := q.scheduled[key]; ok {
-		return
+		return counts[key]
 	}
-	q.attempts[key]++
-	n := q.attempts[key]
+	counts[key]++
+	n := counts[key]
 	if n > maxAttempts {
-		delete(q.attempts, key)
+		if n == maxAttempts+1 {
+			slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
+		}
+		if !keep {
+			delete(counts, key)
+		}
 		delete(q.limited, key)
-		slog.Warn("giving up until the next sweep", "pr", job.Ref.String(), "merge_sha", job.MergeSHA)
-		return
+		return n
 	}
-	delay := max(time.Until(at), backoff(n))
+	q.schedule(job, max(time.Until(at), backoff(n)))
+	return n
+}
+
+// schedule queues job again after delay. Called with q.mu held.
+func (q *Queue) schedule(job Job, delay time.Duration) {
+	key := job.key()
 	// Up to 20% jitter, so retries scheduled for the same reset do not all
 	// fire in the same second, the burst GitHub's secondary limits punish.
 	delay += time.Second + time.Duration(rand.Int64N(int64(delay)/5+1))

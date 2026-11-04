@@ -101,7 +101,7 @@ name, for example `rotki#12 while setting the commit status (GitHub 502 Bad Gate
 | The App has no access to a repository | GitHub answered 403 or 404 for a repository: the App is not installed there, or a permission is missing |
 | CLA check failed | a pull request could not be checked or its status not posted, for any other reason. A GitHub server error or timeout is retried after 1 and 2 minutes first, and alerts only if the pull request still fails after that |
 | GitHub rate limit reached | a check or sweep hit a limit and was deferred |
-| GitHub keeps failing | 5 calls in a row got a server error or no answer. Every call to GitHub is then held back for a minute, and checks and sweeps wait instead of each retrying. The first call after the hold tests GitHub: an answer ends it with a recovery, another failure holds again for twice as long, up to 15 minutes. Pull requests waiting on the hold raise no alert of their own |
+| GitHub keeps failing | 5 calls in a row within a minute got a server error or no answer, minting the installation token included. Every call to GitHub is then held back for a minute, and checks and sweeps wait instead of each retrying. After the hold one call at a time tests GitHub: an answer ends it with a recovery, another failure holds again for twice as long, up to 15 minutes. Pull requests waiting on the hold raise no alert of their own and wait however long it lasts |
 | Reconcile sweep failed | the periodic search for open pull requests failed |
 | Reading / writing the data directory failed | a refresh, the admin page or a signing could not use the volume |
 | Webhook with an invalid signature rejected | a delivery failed the HMAC check |

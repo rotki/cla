@@ -339,11 +339,12 @@ func (q *Queue) report(err error, job Job) {
 	}
 	retryAt, limited := githubapp.RetryAfter(err)
 	if limited && githubapp.Held(err) {
-		// GitHub keeps failing: wait out the hold like a limit, without
-		// the rate limit alert or a failure of its own. The hold alerts once
-		// for every pull request.
+		// GitHub keeps failing: wait out the hold, without the rate limit
+		// alert, a failure of its own or an attempt counted towards giving
+		// up. Nothing reached GitHub, and the hold alerts once for every
+		// pull request.
 		slog.Warn("GitHub calls held, rescheduling", "pr", ref.String(), "retry_at", retryAt)
-		q.retryAt(job, retryAt)
+		q.retryHeld(job, retryAt)
 		return
 	}
 	if limited {
@@ -493,6 +494,18 @@ func (q *Queue) retry(job Job, counts map[jobKey]int, at time.Time, keep bool) i
 	}
 	q.schedule(job, max(time.Until(at), backoff(n)))
 	return n
+}
+
+// retryHeld queues job again once GitHub's outage hold allows, without
+// counting an attempt: however long the outage, the job waits rather than
+// being left to a sweep, which never finds a merge queue commit.
+func (q *Queue) retryHeld(job Job, at time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.scheduled[job.key()]; ok {
+		return
+	}
+	q.schedule(job, max(time.Until(at), 0))
 }
 
 // schedule queues job again after delay. Called with q.mu held.

@@ -100,24 +100,30 @@ type Limits struct {
 	blockedUntil time.Time
 	now          func() time.Time
 
-	// failures counts calls in a row that got a server error or no answer.
-	// After holdAfter of them every call is held back until heldUntil, so a
-	// GitHub outage is not met with a retry from every pull request. The
-	// first call after a hold is the probe: an answer ends it, another
+	// failures counts calls in a row that got a server error or no answer,
+	// within holdWindow of the first. After holdAfter of them every call is
+	// held back until heldUntil, so a GitHub outage is not met with a retry
+	// from every pull request. Once a hold ends, one call at a time goes out
+	// as the probe until probeUntil: an answer ends the outage, another
 	// failure holds again for twice as long.
-	failures  int
-	heldUntil time.Time
-	hold      time.Duration
-	onHold    func(status int)
-	onRecover func()
+	failures     int
+	firstFailure time.Time
+	heldUntil    time.Time
+	probeUntil   time.Time
+	hold         time.Duration
+	onHold       func(status int)
+	onRecover    func()
 }
 
-// The outage hold: after holdAfter failed calls in a row, a minute, then
-// twice as long each time the probe fails, up to holdMax.
+// The outage hold: after holdAfter failed calls in a row within holdWindow,
+// a minute, then twice as long each time the probe fails, up to holdMax. A
+// probe that never reports back frees its place after probeTimeout.
 const (
-	holdAfter = 5
-	holdMin   = time.Minute
-	holdMax   = 15 * time.Minute
+	holdAfter    = 5
+	holdWindow   = time.Minute
+	holdMin      = time.Minute
+	holdMax      = 15 * time.Minute
+	probeTimeout = 2 * callTimeout
 )
 
 func NewLimits() *Limits {
@@ -174,9 +180,16 @@ func (l *Limits) answered(status int) {
 	l.mu.Lock()
 	var hold func(int)
 	var recovered func()
+	now := l.now()
+	l.probeUntil = time.Time{}
 	if failed {
+		// Failures spread out over time are not an outage: count anew. In
+		// an outage every failure counts, the probe's included.
+		if l.hold == 0 && (l.failures == 0 || now.Sub(l.firstFailure) > holdWindow) {
+			l.failures, l.firstFailure = 0, now
+		}
 		l.failures++
-		if now := l.now(); l.failures >= holdAfter && !l.heldUntil.After(now) {
+		if (l.hold > 0 || l.failures >= holdAfter) && !l.heldUntil.After(now) {
 			l.hold = min(max(2*l.hold, holdMin), holdMax)
 			l.heldUntil = now.Add(l.hold)
 			hold = l.onHold
@@ -196,12 +209,37 @@ func (l *Limits) answered(status int) {
 	}
 }
 
-// Held reports whether calls are held back because GitHub keeps failing,
-// and until when.
+// failed notes a call that failed before or without an answer GitHub's
+// limits saw, such as minting the installation token: no answer or a server
+// error counts towards a hold. A call cut short by its caller says nothing
+// about GitHub.
+func (l *Limits) failed(err error) {
+	var terr *transportError
+	switch {
+	case errors.As(err, &terr) && !errors.Is(err, context.Canceled):
+		l.answered(0)
+	case StatusOf(err) >= 500:
+		l.answered(StatusOf(err))
+	}
+}
+
+// Held reports whether a call must be held back because GitHub keeps
+// failing, and until when. After a hold it lets one call through as the
+// probe and holds the rest until that one reports back.
 func (l *Limits) Held() (time.Time, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.heldUntil, l.heldUntil.After(l.now())
+	now := l.now()
+	if l.heldUntil.After(now) {
+		return l.heldUntil, true
+	}
+	if l.hold > 0 {
+		if l.probeUntil.After(now) {
+			return l.probeUntil, true
+		}
+		l.probeUntil = now.Add(probeTimeout)
+	}
+	return time.Time{}, false
 }
 
 // Block stops all calls until the given time.

@@ -327,6 +327,69 @@ func TestOutageHold(t *testing.T) {
 	}
 }
 
+func TestFailuresSpreadOutDoNotHold(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	for range holdAfter - 1 {
+		l.answered(502)
+	}
+	now = now.Add(holdWindow + time.Second)
+	l.answered(502)
+	if _, held := l.Held(); held {
+		t.Fatal("failures spread over more than holdWindow started a hold")
+	}
+	for range holdAfter - 1 {
+		l.answered(502)
+	}
+	if _, held := l.Held(); !held {
+		t.Fatal("failures within holdWindow did not start a hold")
+	}
+}
+
+func TestOneProbeAfterAHold(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := NewLimits()
+	l.now = func() time.Time { return now }
+	for range holdAfter {
+		l.answered(0)
+	}
+	now = now.Add(holdMin)
+
+	if _, held := l.Held(); held {
+		t.Fatal("no probe let through once the hold ended")
+	}
+	if until, held := l.Held(); !held || !until.Equal(now.Add(probeTimeout)) {
+		t.Fatalf("a second call went out beside the probe: held until %v", until)
+	}
+	// A probe that never reports back frees its place.
+	now = now.Add(probeTimeout)
+	if _, held := l.Held(); held {
+		t.Fatal("a lost probe kept every call held")
+	}
+	l.answered(200)
+	for range 3 {
+		if _, held := l.Held(); held {
+			t.Fatal("calls held after the probe got an answer")
+		}
+	}
+}
+
+func TestFailedTokenCountsTowardsAHold(t *testing.T) {
+	c := NewPublicClient("http://127.0.0.1:1")
+	tokens := 0
+	c.auth = func(context.Context) (string, error) {
+		tokens++
+		return "", &APIError{Method: http.MethodPost, Path: "/app/installations/1/access_tokens", Status: 502}
+	}
+	for range holdAfter + 3 {
+		_, _ = c.Do(context.Background(), http.MethodGet, "/repos/o/r", nil, nil)
+	}
+	if tokens != holdAfter {
+		t.Fatalf("token minted %d times, want %d before the hold", tokens, holdAfter)
+	}
+}
+
 func TestClientHoldsCallsWhileGitHubFails(t *testing.T) {
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

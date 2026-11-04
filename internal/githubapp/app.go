@@ -463,6 +463,11 @@ func (c *Client) send(ctx context.Context, r request) (response, error) {
 		if paced {
 			c.pacer.Release(slot)
 		}
+		// Minting the token is a call to GitHub too: in an outage it must
+		// count and be held like any other.
+		if c.limits != nil {
+			c.limits.failed(err)
+		}
 		return response{}, err
 	}
 	return do(ctx, c.http, c.limits, c.apiURL, auth, r)
@@ -610,10 +615,8 @@ func do(ctx context.Context, client *http.Client, limits *Limits, apiURL, auth s
 	resp, err := client.Do(req)
 	if err != nil {
 		err = callFailed(err)
-		// A call cut short by its caller says nothing about GitHub.
-		var terr *transportError
-		if limits != nil && errors.As(err, &terr) && !errors.Is(err, context.Canceled) {
-			limits.answered(0)
+		if limits != nil {
+			limits.failed(err)
 		}
 		return response{}, fmt.Errorf("github %s %s: %w", r.method, path, err)
 	}

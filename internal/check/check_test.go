@@ -351,8 +351,8 @@ func TestHeldCallsWaitWithoutAlerting(t *testing.T) {
 	q.report(held, job)
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.scheduled[job.key()] == nil || q.limited[job.key()] || q.failing[job.key()] || q.transient[job.key()] != 0 {
-		t.Fatalf("a held call: scheduled %v, limited %v, failing %v, transient %v", q.scheduled, q.limited, q.failing, q.transient)
+	if q.scheduled[job.key()] == nil || q.limited[job.key()] || q.failing[job.key()] || q.transient[job.key()] != 0 || q.attempts[job.key()] != 0 {
+		t.Fatalf("a held call: scheduled %v, limited %v, failing %v, transient %v, attempts %v", q.scheduled, q.limited, q.failing, q.transient, q.attempts)
 	}
 	q.scheduled[job.key()].Stop()
 }

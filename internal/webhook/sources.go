@@ -169,7 +169,7 @@ func (s *Sources) sawValid(r *http.Request) {
 	}
 	s.mu.Unlock()
 	if newly {
-		slog.Warn("a valid webhook came from outside GitHub's ranges: alerting on every bad signature until the ranges cover its address; check that the proxy sets X-Real-Ip to the client's address")
+		slog.Warn("a valid webhook came from outside GitHub's ranges: alerting on every bad signature until the ranges cover its address; check that the proxy sets X-Real-Ip to the client's address, then restart")
 		s.markStale()
 	}
 }

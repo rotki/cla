@@ -150,7 +150,7 @@ func (o *OAuth) revoke(ctx context.Context, token string) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return redactURL(err)
+		return &transportError{redactURL(err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {

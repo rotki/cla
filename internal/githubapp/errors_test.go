@@ -1,7 +1,10 @@
 package githubapp
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -65,15 +68,28 @@ func TestTransient(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{fmt.Errorf("connection reset"), true},
+		{fmt.Errorf("github GET /x: %w", &transportError{fmt.Errorf("connection reset")}), true},
 		{&APIError{Status: 502}, true},
 		{&RateLimitError{APIError: APIError{Status: 403}, RetryAt: time.Now()}, true},
 		{&APIError{Status: 401}, false},
 		{&APIError{Status: 422}, false},
+		// No status, but no blip either: access is missing, or the error
+		// never came from a call to GitHub.
+		{&GraphQLError{Count: 1, Types: []string{"NOT_FOUND"}}, false},
+		{&GraphQLError{Count: 1, Types: []string{"FORBIDDEN"}}, false},
+		{fmt.Errorf("writing the journal: disk full"), false},
 	}
 	for _, tc := range cases {
 		if got := Transient(tc.err); got != tc.want {
 			t.Errorf("Transient(%v) = %v, want %v", tc.err, got, tc.want)
 		}
+	}
+
+	// A call that reaches nobody is transient.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	_, err := NewPublicClient(srv.URL).Do(context.Background(), http.MethodGet, "/meta", nil, nil)
+	if err == nil || !Transient(err) {
+		t.Fatalf("a refused connection: Transient(%v) = false", err)
 	}
 }

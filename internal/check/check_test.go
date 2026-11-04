@@ -278,14 +278,34 @@ func TestTransientFailuresAlertOnlyWhenTheyLast(t *testing.T) {
 	}
 	fire()
 	q.report(nil, job)
-	if len(q.failing) != 0 || len(q.attempts) != 0 {
-		t.Fatalf("a success left failing %v, attempts %v", q.failing, q.attempts)
+	if len(q.failing) != 0 || len(q.attempts) != 0 || len(q.transient) != 0 {
+		t.Fatalf("a success left failing %v, attempts %v, transient %v", q.failing, q.attempts, q.transient)
 	}
 
-	// A failure that retrying cannot fix alerts at once, without a retry.
-	q.report(&githubapp.APIError{Method: "GET", Path: "/repos/r", Status: 422}, job)
-	if !q.failing[job.key()] || len(q.scheduled) != 0 {
-		t.Fatalf("a lasting error: failing %v, retry scheduled %v", q.failing, q.scheduled)
+	// Rate limits before a blip do not bring its alert forward.
+	limited := &githubapp.RateLimitError{APIError: githubapp.APIError{Status: 403}, RetryAt: time.Now()}
+	for range 2 {
+		q.report(limited, job)
+		fire()
+	}
+	q.report(unavailable, job)
+	if q.failing[job.key()] || q.attempts[job.key()] != 2 {
+		t.Fatalf("a blip after rate limits: failing %v, attempts %v", q.failing, q.attempts)
+	}
+	fire()
+	q.report(nil, job)
+
+	// Failures that retrying cannot fix alert at once, without a retry:
+	// a REST 4xx, and a GraphQL answer that the App has no access.
+	for _, err := range []error{
+		&githubapp.APIError{Method: "GET", Path: "/repos/r", Status: 422},
+		&githubapp.GraphQLError{Count: 1, Types: []string{"NOT_FOUND"}},
+	} {
+		q.report(err, job)
+		if !q.failing[job.key()] || len(q.scheduled) != 0 {
+			t.Fatalf("%v: failing %v, retry scheduled %v", err, q.failing, q.scheduled)
+		}
+		q.report(nil, job)
 	}
 }
 

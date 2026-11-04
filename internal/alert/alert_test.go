@@ -81,7 +81,7 @@ func TestResolveAnnouncesRecoveryOnce(t *testing.T) {
 	if len(*sent) != 2 {
 		t.Fatalf("want failure and recovery, got %v", *sent)
 	}
-	if (*sent)[1] != "**Recovered:** CLA checks pass again (it failed once more after the last alert)" {
+	if (*sent)[1] != "**Recovered:** No pull request is still failing to be checked (it failed once more after the last alert)" {
 		t.Fatalf("unexpected recovery message %q", (*sent)[1])
 	}
 }

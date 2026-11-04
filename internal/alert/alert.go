@@ -53,20 +53,23 @@ var titles = map[Kind]string{
 	NotInstalled:   "GitHub refused the App an installation token: it was uninstalled from the organization or the installation is suspended. Nothing can be checked until it is installed again",
 }
 
-// recovered says what works again, so a recovery does not read like the
-// failure it ends.
+// recovered says what is known to be fine again, so a recovery does not read
+// like the failure it ends. Several kinds resolve once no pull request is
+// still failing for that reason, which says nothing about the CLA result or
+// about repositories nothing re-checked: keep these to what the trigger
+// establishes.
 var recovered = map[Kind]string{
-	CheckFailed:    "CLA checks pass again",
+	CheckFailed:    "No pull request is still failing to be checked",
 	StoreRead:      "The signatures data directory can be read again",
 	StoreWrite:     "The signatures data directory can be written again",
 	BadSignature:   "Webhooks arrive with valid signatures again",
-	ReconcileError: "The reconcile sweep runs again",
-	RateLimited:    "The GitHub rate limit has reset, deferred work is running",
+	ReconcileError: "The search for open pull requests works again",
+	RateLimited:    "No pull request is still waiting on a GitHub rate limit",
 	BackupFailed:   "Backups are written again",
 	BackupProblems: "The latest backup passed verification",
-	AuditBroken:    "The audit log chain verifies again, anchors are published",
-	NoAccess:       "The App has access to every repository it checks again",
-	NotInstalled:   "GitHub issues the App installation tokens again",
+	AuditBroken:    "The audit log chain verifies again",
+	NoAccess:       "No pull request is still failing for lack of access",
+	NotInstalled:   "Nothing is still failing for a refused installation token",
 }
 
 // ForError picks the alert for a GitHub error and fills d with what it may
